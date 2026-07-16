@@ -17,7 +17,7 @@ struct TKApp: App {
         WindowGroup("tk", id: "main") {
             ContentView(model: model)
         }
-        .defaultSize(width: 560, height: 520)
+        .defaultSize(width: 560, height: 640)
 
         MenuBarExtra {
             MenuBarView(model: model)

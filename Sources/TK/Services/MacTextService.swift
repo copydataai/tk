@@ -28,6 +28,11 @@ final class MacTextService {
     private let speechSynthesizer = AVSpeechSynthesizer()
 
     var hasAccessibilityPermission: Bool { AXIsProcessTrusted() }
+    var availableVoices: [AVSpeechSynthesisVoice] {
+        AVSpeechSynthesisVoice.speechVoices().sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
 
     func requestAccessibility() {
         let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
@@ -88,9 +93,22 @@ final class MacTextService {
         return text
     }
 
-    func speak(_ text: String) {
+    func speak(
+        _ text: String,
+        voiceIdentifier: String,
+        rate: Float,
+        pitch: Float,
+        volume: Float
+    ) {
         speechSynthesizer.stopSpeaking(at: .immediate)
-        speechSynthesizer.speak(AVSpeechUtterance(string: text))
+        let utterance = AVSpeechUtterance(string: text)
+        if !voiceIdentifier.isEmpty {
+            utterance.voice = AVSpeechSynthesisVoice(identifier: voiceIdentifier)
+        }
+        utterance.rate = min(max(rate, AVSpeechUtteranceMinimumSpeechRate), AVSpeechUtteranceMaximumSpeechRate)
+        utterance.pitchMultiplier = min(max(pitch, 0.5), 2)
+        utterance.volume = min(max(volume, 0), 1)
+        speechSynthesizer.speak(utterance)
     }
 
     func stopSpeaking() {

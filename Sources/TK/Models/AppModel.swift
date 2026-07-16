@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Observation
 
@@ -11,6 +12,24 @@ final class AppModel {
 
     var statusMessage = "Ready"
     var accessibilityGranted = false
+
+    var voiceIdentifier: String {
+        didSet { UserDefaults.standard.set(voiceIdentifier, forKey: "voiceIdentifier") }
+    }
+
+    var speechRate: Double {
+        didSet { UserDefaults.standard.set(speechRate, forKey: "speechRate") }
+    }
+
+    var speechPitch: Double {
+        didSet { UserDefaults.standard.set(speechPitch, forKey: "speechPitch") }
+    }
+
+    var speechVolume: Double {
+        didSet { UserDefaults.standard.set(speechVolume, forKey: "speechVolume") }
+    }
+
+    var availableVoices: [AVSpeechSynthesisVoice] { macText.availableVoices }
 
     var dictationShortcut: HotKeyOption {
         didSet {
@@ -27,6 +46,16 @@ final class AppModel {
     }
 
     init() {
+        let savedVoice = UserDefaults.standard.string(forKey: "voiceIdentifier") ?? ""
+        voiceIdentifier = savedVoice.isEmpty || AVSpeechSynthesisVoice(identifier: savedVoice) != nil
+            ? savedVoice
+            : ""
+        speechRate = min(max(Self.savedDouble(
+            key: "speechRate",
+            fallback: Double(AVSpeechUtteranceDefaultSpeechRate)
+        ), 0), 1)
+        speechPitch = min(max(Self.savedDouble(key: "speechPitch", fallback: 1), 0.5), 2)
+        speechVolume = min(max(Self.savedDouble(key: "speechVolume", fallback: 1), 0), 1)
         dictationShortcut = Self.savedShortcut(
             key: "dictationShortcut",
             fallback: .controlOptionSpace
@@ -67,7 +96,13 @@ final class AppModel {
         Task {
             do {
                 let text = try await macText.selectedText()
-                macText.speak(text)
+                macText.speak(
+                    text,
+                    voiceIdentifier: voiceIdentifier,
+                    rate: Float(speechRate),
+                    pitch: Float(speechPitch),
+                    volume: Float(speechVolume)
+                )
                 statusMessage = "Reading selection"
             } catch {
                 statusMessage = error.localizedDescription
@@ -111,5 +146,10 @@ final class AppModel {
     private static func savedShortcut(key: String, fallback: HotKeyOption) -> HotKeyOption {
         guard let rawValue = UserDefaults.standard.string(forKey: key) else { return fallback }
         return HotKeyOption(rawValue: rawValue) ?? fallback
+    }
+
+    private static func savedDouble(key: String, fallback: Double) -> Double {
+        guard UserDefaults.standard.object(forKey: key) != nil else { return fallback }
+        return UserDefaults.standard.double(forKey: key)
     }
 }

@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import SwiftUI
 
 struct ContentView: View {
@@ -51,16 +52,63 @@ struct ContentView: View {
             }
 
             GroupBox("Read selected text") {
-                HStack {
-                    Picker("Shortcut", selection: $model.readShortcut) {
-                        ForEach(HotKeyOption.readingChoices) { shortcut in
-                            Text(shortcut.label).tag(shortcut)
+                VStack(spacing: 12) {
+                    HStack {
+                        Picker("Shortcut", selection: $model.readShortcut) {
+                            ForEach(HotKeyOption.readingChoices) { shortcut in
+                                Text(shortcut.label).tag(shortcut)
+                            }
+                        }
+                        .frame(width: 190)
+                        Spacer()
+                        Button("Stop") { model.stopSpeaking() }
+                        Button("Read Selection") { model.readSelection() }
+                    }
+
+                    Divider()
+
+                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                        GridRow {
+                            Text("Voice")
+                            Picker("Voice", selection: $model.voiceIdentifier) {
+                                Text("System Default").tag("")
+                                ForEach(model.availableVoices, id: \.identifier) { voice in
+                                    Text("\(voice.name) — \(voice.language)").tag(voice.identifier)
+                                }
+                            }
+                            .labelsHidden()
+                        }
+                        GridRow {
+                            Text("Speed")
+                            HStack {
+                                Slider(
+                                    value: $model.speechRate,
+                                    in: Double(AVSpeechUtteranceMinimumSpeechRate)...Double(AVSpeechUtteranceMaximumSpeechRate)
+                                )
+                                Text(model.speechRate, format: .number.precision(.fractionLength(2)))
+                                    .monospacedDigit()
+                                    .frame(width: 34, alignment: .trailing)
+                            }
+                        }
+                        GridRow {
+                            Text("Pitch")
+                            HStack {
+                                Slider(value: $model.speechPitch, in: 0.5...2)
+                                Text(model.speechPitch, format: .number.precision(.fractionLength(2)))
+                                    .monospacedDigit()
+                                    .frame(width: 34, alignment: .trailing)
+                            }
+                        }
+                        GridRow {
+                            Text("Volume")
+                            HStack {
+                                Slider(value: $model.speechVolume, in: 0...1)
+                                Text(model.speechVolume, format: .percent.precision(.fractionLength(0)))
+                                    .monospacedDigit()
+                                    .frame(width: 40, alignment: .trailing)
+                            }
                         }
                     }
-                    .frame(width: 190)
-                    Spacer()
-                    Button("Stop") { model.stopSpeaking() }
-                    Button("Read Selection") { model.readSelection() }
                 }
                 .padding(6)
             }
