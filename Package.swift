@@ -1,0 +1,17 @@
+// swift-tools-version: 5.10
+
+import PackageDescription
+
+let package = Package(
+    name: "tk",
+    platforms: [.macOS(.v14)],
+    products: [
+        .executable(name: "tk", targets: ["TK"])
+    ],
+    targets: [
+        .executableTarget(
+            name: "TK",
+            path: "Sources/TK"
+        )
+    ]
+)
