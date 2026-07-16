@@ -6,6 +6,7 @@
 
 - Press a global shortcut, speak, and press it again to insert the transcription wherever the text cursor is active.
 - Select text in another app and read it aloud with a second global shortcut.
+- Choose any installed macOS voice and adjust its speed, pitch, and volume.
 - Choose shortcut presets from the app window.
 - Keep running from the menu bar.
 
@@ -44,6 +45,8 @@ To build, launch, and confirm that the process started:
 3. Press the dictation shortcut once and approve Microphone and Speech Recognition access.
 4. Place the cursor in another app, press the shortcut, speak, then press it again to insert.
 5. To hear text, select it in another app and press the read shortcut.
+
+Voice settings are in the **Read selected text** section and are saved automatically.
 
 Default shortcuts:
 
