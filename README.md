@@ -6,7 +6,8 @@
 
 - Press a global shortcut, speak, and press it again to insert the transcription wherever the text cursor is active.
 - Select text in another app and read it aloud with a second global shortcut.
-- Choose from Kokoro's multilingual voices and adjust speed and volume.
+- Preview Kokoro's multilingual voices by language, then adjust speed and volume.
+- Review previous dictations in local, on-device history.
 - Choose shortcut presets from the app window.
 - Keep running from the menu bar.
 
@@ -56,9 +57,9 @@ To build, launch, and confirm that the process started:
 2. Allow `tk` under **System Settings → Privacy & Security → Accessibility**.
 3. Press the dictation shortcut once and approve Microphone access. `tk` automatically uses the last working microphone and falls back to another connected input when needed.
 4. Place the cursor in another app, press the shortcut, speak, then press it again to insert.
-5. To hear text, select it in another app and press the read shortcut.
+5. Open **Read aloud** to preview a voice, or select text in another app and press the read shortcut.
 
-Voice settings are in the **Read selected text** section and are saved automatically.
+Voice settings are saved automatically. Transcript text and timestamps are stored with macOS SQLite at `~/Library/Application Support/tk/history.sqlite3`; microphone audio is not retained.
 
 Default shortcuts:
 
