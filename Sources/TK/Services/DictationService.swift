@@ -100,12 +100,15 @@ final class DictationService {
             return
         }
 
-        let modelURL = FileManager.default
+        let modelDirectory = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("tk/models/ggml-large-v3-turbo-q5_0.bin")
-        guard FileManager.default.fileExists(atPath: modelURL.path) else {
+            .appendingPathComponent("tk/models")
+        let modelURL = modelDirectory.appendingPathComponent("ggml-large-v3-turbo-q5_0.bin")
+        let vadModelURL = modelDirectory.appendingPathComponent("ggml-silero-v6.2.0.bin")
+        guard FileManager.default.fileExists(atPath: modelURL.path),
+              FileManager.default.fileExists(atPath: vadModelURL.path) else {
             try? FileManager.default.removeItem(at: recordingURL)
-            status = "Whisper model is missing — build with script/build_and_run.sh"
+            status = "Whisper models are missing — build with script/build_and_run.sh"
             return
         }
 
@@ -122,7 +125,8 @@ final class DictationService {
                     try Self.transcribe(
                         recordingURL,
                         executableURL: executableURL,
-                        modelURL: modelURL
+                        modelURL: modelURL,
+                        vadModelURL: vadModelURL
                     )
                 }.value
                 transcript = text
@@ -151,7 +155,8 @@ final class DictationService {
     nonisolated private static func transcribe(
         _ recordingURL: URL,
         executableURL: URL,
-        modelURL: URL
+        modelURL: URL,
+        vadModelURL: URL
     ) throws -> String {
         let temporaryDirectory = FileManager.default.temporaryDirectory
         let wavURL = temporaryDirectory
@@ -179,6 +184,8 @@ final class DictationService {
             arguments: [
                 "-m", modelURL.path,
                 "-f", wavURL.path,
+                "--vad",
+                "-vm", vadModelURL.path,
                 "-l", "auto",
                 "-otxt",
                 "-of", outputURL.path,

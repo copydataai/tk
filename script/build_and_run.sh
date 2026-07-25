@@ -8,6 +8,8 @@ MIN_SYSTEM_VERSION="14.0"
 WHISPER_VERSION="v1.9.1"
 MODEL_NAME="ggml-large-v3-turbo-q5_0.bin"
 MODEL_SHA256="394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+VAD_MODEL_NAME="ggml-silero-v6.2.0.bin"
+VAD_MODEL_SHA256="2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987"
 BABYLON_COMMIT="208e3d3d0d8305bb7c9ffa7d16a0c889cd0d2cae"
 KOKORO_MODEL_NAME="kokoro-v1.0-fp32.onnx"
 KOKORO_MODEL_SHA256="8fbea51ea711f2af382e88c833d9e288c6dc82ce5e98421ea61c058ce21a34cb"
@@ -30,6 +32,8 @@ BABYLON_BINARY="$BABYLON_BIN/babylon"
 MODEL_DIR="$HOME/Library/Application Support/tk/models"
 MODEL_FILE="$MODEL_DIR/$MODEL_NAME"
 MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$MODEL_NAME"
+VAD_MODEL_FILE="$MODEL_DIR/$VAD_MODEL_NAME"
+VAD_MODEL_URL="https://huggingface.co/ggml-org/whisper-vad/resolve/main/$VAD_MODEL_NAME"
 KOKORO_MODEL_FILE="$MODEL_DIR/$KOKORO_MODEL_NAME"
 KOKORO_MODEL_URL="https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/1939ad2a8e416c0acfeecc08a694d14ef25f2231/onnx/model.onnx"
 
@@ -89,6 +93,21 @@ else
     exit 1
   }
   mv "$MODEL_DOWNLOAD" "$MODEL_FILE"
+fi
+
+if [[ -f "$VAD_MODEL_FILE" ]]; then
+  [[ "$(shasum -a 256 "$VAD_MODEL_FILE" | awk '{print $1}')" == "$VAD_MODEL_SHA256" ]] || {
+    echo "Model checksum failed: $VAD_MODEL_FILE" >&2
+    exit 1
+  }
+else
+  VAD_MODEL_DOWNLOAD="$VAD_MODEL_FILE.download"
+  curl -fL "$VAD_MODEL_URL" -o "$VAD_MODEL_DOWNLOAD"
+  [[ "$(shasum -a 256 "$VAD_MODEL_DOWNLOAD" | awk '{print $1}')" == "$VAD_MODEL_SHA256" ]] || {
+    echo "Downloaded VAD model checksum failed" >&2
+    exit 1
+  }
+  mv "$VAD_MODEL_DOWNLOAD" "$VAD_MODEL_FILE"
 fi
 
 if [[ -f "$KOKORO_MODEL_FILE" ]]; then
@@ -193,9 +212,21 @@ case "$MODE" in
     "$APP_RESOURCES/whisper-cli" \
       -m "$MODEL_FILE" \
       -f "$VERIFY_DIR/input.wav" \
+      --vad -vm "$VAD_MODEL_FILE" \
       -l en -otxt -of "$VERIFY_DIR/transcript" -np -nt \
       >/dev/null 2>&1
     grep -q "fellow Americans" "$VERIFY_DIR/transcript.txt"
+    /usr/bin/afconvert \
+      "$WHISPER_SOURCE/samples/jfk.wav" \
+      "$VERIFY_DIR/silence.wav" \
+      -f WAVE -d LEI16@16000 -c 1 -m -1
+    "$APP_RESOURCES/whisper-cli" \
+      -m "$MODEL_FILE" \
+      -f "$VERIFY_DIR/silence.wav" \
+      --vad -vm "$VAD_MODEL_FILE" \
+      -l en -otxt -of "$VERIFY_DIR/silence" -np -nt \
+      >/dev/null 2>&1
+    [[ ! -s "$VERIFY_DIR/silence.txt" ]]
     "$KOKORO_RESOURCES/babylon" \
       --phonemizer-model "$KOKORO_RESOURCES/models/open-phonemizer.onnx" \
       --dictionary "$KOKORO_RESOURCES/data/dictionary.json" \
