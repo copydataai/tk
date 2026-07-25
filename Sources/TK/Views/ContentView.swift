@@ -5,6 +5,7 @@ let flowAccent = Color(red: 1, green: 0.38, blue: 0.27)
 
 private enum HubSection: String, CaseIterable, Identifiable {
     case home = "Home"
+    case history = "History"
     case readAloud = "Read aloud"
     case settings = "Settings"
 
@@ -13,6 +14,7 @@ private enum HubSection: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .home: "house"
+        case .history: "clock"
         case .readAloud: "speaker.wave.2"
         case .settings: "gearshape"
         }
@@ -63,6 +65,8 @@ struct ContentView: View {
             switch selection ?? .home {
             case .home:
                 HomeView(model: model)
+            case .history:
+                HistoryView(model: model)
             case .readAloud:
                 ReadAloudView(model: model)
             case .settings:
@@ -159,20 +163,25 @@ private struct HomeView: View {
                         HStack {
                             Image(systemName: "text.quote")
                                 .foregroundStyle(flowAccent)
-                            Text(model.dictation.transcript.isEmpty ? "No dictations yet" : "Latest dictation")
+                            Text(model.transcripts.isEmpty ? "No dictations yet" : "Latest dictation")
                                 .font(.headline)
                             Spacer()
-                            Text(model.dictation.status)
+                            Text(
+                                model.transcripts.first?.createdAt.formatted(
+                                    date: .abbreviated,
+                                    time: .shortened
+                                ) ?? model.dictation.status
+                            )
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         Text(
-                            model.dictation.transcript.isEmpty
+                            model.transcripts.isEmpty
                                 ? "Your latest transcription will appear here."
-                                : model.dictation.transcript
+                                : model.transcripts[0].text
                         )
                         .foregroundStyle(
-                            model.dictation.transcript.isEmpty ? .secondary : .primary
+                            model.transcripts.isEmpty ? .secondary : .primary
                         )
                         .textSelection(.enabled)
                     }
@@ -194,6 +203,39 @@ private struct HomeView: View {
     private var dictationButtonTitle: String {
         if model.dictation.isTranscribing { return "Transcribing…" }
         return model.dictation.isRecording ? "Stop & insert" : "Start dictation"
+    }
+}
+
+private struct HistoryView: View {
+    let model: AppModel
+
+    var body: some View {
+        Group {
+            if model.transcripts.isEmpty {
+                ContentUnavailableView(
+                    "No dictations yet",
+                    systemImage: "text.quote",
+                    description: Text("Completed dictations will appear here.")
+                )
+            } else {
+                List(model.transcripts) { transcript in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(transcript.text)
+                            .textSelection(.enabled)
+                        Text(
+                            transcript.createdAt.formatted(
+                                date: .abbreviated,
+                                time: .shortened
+                            )
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 6)
+                }
+            }
+        }
+        .navigationTitle("History")
     }
 }
 

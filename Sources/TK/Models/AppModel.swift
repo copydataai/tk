@@ -8,9 +8,12 @@ final class AppModel {
 
     private let hotKeys = GlobalHotKeyService()
     private let macText = MacTextService()
+    private var transcriptStore: TranscriptStore?
+    private var transcriptStoreError: String?
 
     var statusMessage = "Ready"
     var accessibilityGranted = false
+    var transcripts: [TranscriptRecord] = []
 
     var voiceIdentifier: String {
         didSet { UserDefaults.standard.set(voiceIdentifier, forKey: "kokoroVoiceIdentifier") }
@@ -61,9 +64,16 @@ final class AppModel {
 
         assert(Set(HotKeyOption.dictationChoices).isDisjoint(with: HotKeyOption.readingChoices))
 
+        do {
+            transcriptStore = try TranscriptStore.applicationSupport()
+            transcripts = try transcriptStore?.recent() ?? []
+        } catch {
+            transcriptStoreError = error.localizedDescription
+        }
+
         dictation.onTranscriptReady = { [weak self] text in
             Task { @MainActor in
-                await self?.insert(text)
+                await self?.saveAndInsert(text)
             }
         }
         hotKeys.onDictation = { [weak self] in self?.toggleDictation() }
@@ -71,6 +81,9 @@ final class AppModel {
         hotKeys.start()
         configureHotKeys()
         refreshPermissions()
+        if let transcriptStoreError {
+            statusMessage = "History unavailable: \(transcriptStoreError)"
+        }
     }
 
     func toggleDictation() {
@@ -151,12 +164,31 @@ final class AppModel {
         ) ? "Shortcuts ready" : "A shortcut is already used by another app"
     }
 
-    private func insert(_ text: String) async {
+    private func saveAndInsert(_ text: String) async {
+        do {
+            guard let transcriptStore else {
+                throw TranscriptStoreError.sqlite(
+                    transcriptStoreError ?? "The database is unavailable."
+                )
+            }
+            transcripts.insert(try transcriptStore.insert(text), at: 0)
+            transcriptStoreError = nil
+            if transcripts.count > 50 {
+                transcripts.removeLast()
+            }
+        } catch {
+            transcriptStoreError = error.localizedDescription
+        }
+
         do {
             try await macText.insert(text)
-            statusMessage = "Inserted transcription"
+            statusMessage = transcriptStoreError.map {
+                "Inserted, but history could not be saved: \($0)"
+            } ?? "Inserted transcription"
         } catch {
-            statusMessage = error.localizedDescription
+            statusMessage = transcriptStoreError.map {
+                "History could not be saved: \($0). Insertion also failed: \(error.localizedDescription)"
+            } ?? error.localizedDescription
         }
     }
 
