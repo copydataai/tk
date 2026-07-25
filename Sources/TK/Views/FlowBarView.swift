@@ -2,7 +2,6 @@ import AppKit
 import SwiftUI
 
 struct FlowBarView: View {
-    @Environment(\.openWindow) private var openWindow
     let model: AppModel
 
     var body: some View {
@@ -46,19 +45,6 @@ struct FlowBarView: View {
                     .padding(.trailing, 4)
             } else {
                 Button {
-                    openWindow(id: "main")
-                    NSApp.activate(ignoringOtherApps: true)
-                } label: {
-                    Text("EN")
-                        .font(.caption.bold())
-                }
-                .buttonStyle(.plain)
-                .help("Open tk")
-
-                Divider()
-                    .frame(height: 20)
-
-                Button {
                     model.toggleDictation()
                 } label: {
                     Image(systemName: "mic.fill")
@@ -69,18 +55,7 @@ struct FlowBarView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Start dictation — \(model.dictationShortcut.label)")
-
-                Divider()
-                    .frame(height: 20)
-
-                Button {
-                    openWindow(id: "main")
-                    NSApp.activate(ignoringOtherApps: true)
-                } label: {
-                    Image(systemName: "gearshape")
-                }
-                .buttonStyle(.plain)
-                .help("Open settings")
+                .accessibilityLabel("Start dictation")
             }
         }
         .buttonStyle(.plain)
