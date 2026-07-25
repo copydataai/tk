@@ -54,10 +54,9 @@ To build, launch, and confirm that the process started:
 
 1. Open `tk` and click **Enable…**.
 2. Allow `tk` under **System Settings → Privacy & Security → Accessibility**.
-3. In **System Settings → Sound → Input**, choose a microphone that shows input activity. The built-in microphone on recent MacBooks is unavailable while the lid is closed.
-4. Press the dictation shortcut once and approve Microphone access.
-5. Place the cursor in another app, press the shortcut, speak, then press it again to insert.
-6. To hear text, select it in another app and press the read shortcut.
+3. Press the dictation shortcut once and approve Microphone access. `tk` automatically uses the last working microphone and falls back to another connected input when needed.
+4. Place the cursor in another app, press the shortcut, speak, then press it again to insert.
+5. To hear text, select it in another app and press the read shortcut.
 
 Voice settings are in the **Read selected text** section and are saved automatically.
 
