@@ -15,11 +15,12 @@ final class DictationService {
     @ObservationIgnored private var captureSession: AVCaptureSession?
     @ObservationIgnored private var captureOutput: AVCaptureAudioFileOutput?
     @ObservationIgnored private var recordingDelegate: RecordingDelegate?
+    @ObservationIgnored private var recordingLanguage: String?
     @ObservationIgnored private var isPreparing = false
     @ObservationIgnored private var isFinalizing = false
     @ObservationIgnored private var shouldTranscribe = false
 
-    func toggle() {
+    func toggle(language: String? = nil) {
         guard !isTranscribing else {
             status = "Transcription is still running"
             return
@@ -31,7 +32,7 @@ final class DictationService {
         if isRecording {
             finish()
         } else {
-            requestMicrophonePermission()
+            requestMicrophonePermission(language: language)
         }
     }
 
@@ -42,16 +43,16 @@ final class DictationService {
         status = "Dictation cancelled"
     }
 
-    private func requestMicrophonePermission() {
+    private func requestMicrophonePermission(language: String?) {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
-            startRecording()
+            startRecording(language: language)
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
                 Task { @MainActor in
                     guard let self else { return }
                     if granted {
-                        self.startRecording()
+                        self.startRecording(language: language)
                     } else {
                         self.status = "Microphone permission is required"
                     }
@@ -62,7 +63,7 @@ final class DictationService {
         }
     }
 
-    private func startRecording() {
+    private func startRecording(language: String?) {
         isPreparing = true
         status = "Choosing a working microphone…"
 
@@ -73,7 +74,7 @@ final class DictationService {
                 }.value
                 let url = FileManager.default.temporaryDirectory
                     .appendingPathComponent("tk-\(UUID().uuidString)")
-                    .appendingPathExtension("caf")
+                    .appendingPathExtension("wav")
                 let delegate = RecordingDelegate { [weak self] url, error in
                     Task { @MainActor in
                         self?.recordingDidFinish(at: url, error: error)
@@ -83,13 +84,14 @@ final class DictationService {
                 captureSession = setup.session
                 captureOutput = setup.output
                 recordingDelegate = delegate
+                recordingLanguage = language
                 UserDefaults.standard.set(setup.deviceID, forKey: "workingMicrophoneID")
                 transcript = ""
                 shouldTranscribe = false
                 isRecording = true
                 setup.output.startRecording(
                     to: url,
-                    outputFileType: .caf,
+                    outputFileType: .wav,
                     recordingDelegate: delegate
                 )
                 status = "Listening on \(setup.deviceName) — press the shortcut again to insert"
@@ -116,10 +118,12 @@ final class DictationService {
 
     private func recordingDidFinish(at recordingURL: URL, error: Error?) {
         let shouldTranscribe = shouldTranscribe
+        let language = recordingLanguage
         let session = captureSession
         captureSession = nil
         captureOutput = nil
         recordingDelegate = nil
+        recordingLanguage = nil
         self.shouldTranscribe = false
         isFinalizing = false
         Task.detached { session?.stopRunning() }
@@ -135,26 +139,6 @@ final class DictationService {
             return
         }
 
-        guard let executableURL = Bundle.main.url(forResource: "whisper-cli", withExtension: nil) else {
-            try? FileManager.default.removeItem(at: recordingURL)
-            isTranscribing = false
-            status = "Whisper runtime is missing — build with script/build_and_run.sh"
-            return
-        }
-
-        let modelDirectory = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("tk/models")
-        let modelURL = modelDirectory.appendingPathComponent("ggml-large-v3-turbo-q5_0.bin")
-        let vadModelURL = modelDirectory.appendingPathComponent("ggml-silero-v6.2.0.bin")
-        guard FileManager.default.fileExists(atPath: modelURL.path),
-              FileManager.default.fileExists(atPath: vadModelURL.path) else {
-            try? FileManager.default.removeItem(at: recordingURL)
-            isTranscribing = false
-            status = "Whisper models are missing — build with script/build_and_run.sh"
-            return
-        }
-
         status = "Transcribing locally…"
 
         Task {
@@ -163,14 +147,10 @@ final class DictationService {
                 isTranscribing = false
             }
             do {
-                let text = try await Task.detached {
-                    try Self.transcribe(
-                        recordingURL,
-                        executableURL: executableURL,
-                        modelURL: modelURL,
-                        vadModelURL: vadModelURL
-                    )
-                }.value
+                let text = try await WhisperRuntime.shared.transcribe(
+                    wavURL: recordingURL,
+                    language: language ?? "auto"
+                )
                 transcript = text
                 if text.isEmpty {
                     status = "Nothing heard"
@@ -185,6 +165,9 @@ final class DictationService {
     }
 
     nonisolated private static func prepareCapture() throws -> CaptureSetup {
+        guard AVCaptureAudioFileOutput.availableOutputFileTypes().contains(.wav) else {
+            throw MicrophoneError.audioFormatUnsupported
+        }
         let discovery = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.microphone, .external],
             mediaType: .audio,
@@ -205,29 +188,50 @@ final class DictationService {
         )
 
         var lastError: Error?
+        if let savedDevice = devices.first(where: { $0.uniqueID == savedID }) {
+            do {
+                return try configure(savedDevice)
+            } catch {
+                lastError = error
+            }
+        }
+
         for device in devices {
             do {
                 guard try probe(device) else { continue }
-                let session = AVCaptureSession()
-                let input = try AVCaptureDeviceInput(device: device)
-                let output = AVCaptureAudioFileOutput()
-                guard session.canAddInput(input), session.canAddOutput(output) else {
-                    throw MicrophoneError.configurationFailed
-                }
-                session.addInput(input)
-                session.addOutput(output)
-                session.startRunning()
-                return CaptureSetup(
-                    session: session,
-                    output: output,
-                    deviceID: device.uniqueID,
-                    deviceName: device.localizedName
-                )
+                return try configure(device)
             } catch {
                 lastError = error
             }
         }
         throw lastError ?? MicrophoneError.noWorkingInput
+    }
+
+    nonisolated private static func configure(_ device: AVCaptureDevice) throws -> CaptureSetup {
+        let session = AVCaptureSession()
+        let input = try AVCaptureDeviceInput(device: device)
+        let output = AVCaptureAudioFileOutput()
+        output.audioSettings = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 16_000,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+        ]
+        guard session.canAddInput(input), session.canAddOutput(output) else {
+            throw MicrophoneError.configurationFailed
+        }
+        session.addInput(input)
+        session.addOutput(output)
+        session.startRunning()
+        return CaptureSetup(
+            session: session,
+            output: output,
+            deviceID: device.uniqueID,
+            deviceName: device.localizedName
+        )
     }
 
     nonisolated private static func probe(_ device: AVCaptureDevice) throws -> Bool {
@@ -273,72 +277,6 @@ final class DictationService {
         guard let error = error as NSError? else { return true }
         return error.userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool == true
     }
-
-    nonisolated private static func transcribe(
-        _ recordingURL: URL,
-        executableURL: URL,
-        modelURL: URL,
-        vadModelURL: URL
-    ) throws -> String {
-        let temporaryDirectory = FileManager.default.temporaryDirectory
-        let wavURL = temporaryDirectory
-            .appendingPathComponent("tk-\(UUID().uuidString)")
-            .appendingPathExtension("wav")
-        let outputURL = temporaryDirectory.appendingPathComponent("tk-\(UUID().uuidString)")
-        let textURL = outputURL.appendingPathExtension("txt")
-        defer {
-            try? FileManager.default.removeItem(at: wavURL)
-            try? FileManager.default.removeItem(at: textURL)
-        }
-
-        try run(
-            URL(fileURLWithPath: "/usr/bin/afconvert"),
-            arguments: [
-                recordingURL.path,
-                wavURL.path,
-                "-f", "WAVE",
-                "-d", "LEI16@16000",
-                "-c", "1",
-            ]
-        )
-        try run(
-            executableURL,
-            arguments: [
-                "-m", modelURL.path,
-                "-f", wavURL.path,
-                "--vad",
-                "-vm", vadModelURL.path,
-                "-l", "auto",
-                "-otxt",
-                "-of", outputURL.path,
-                "-np",
-                "-nt",
-            ]
-        )
-
-        return try String(contentsOf: textURL, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    nonisolated private static func run(_ executableURL: URL, arguments: [String]) throws {
-        let process = Process()
-        let errors = Pipe()
-        process.executableURL = executableURL
-        process.arguments = arguments
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = errors
-        try process.run()
-        let errorData = errors.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            let message = String(data: errorData, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            throw WhisperError.processFailed(
-                message.flatMap { $0.isEmpty ? nil : $0 }
-                    ?? "\(executableURL.lastPathComponent) exited with status \(process.terminationStatus)"
-            )
-        }
-    }
 }
 
 private struct CaptureSetup: @unchecked Sendable {
@@ -383,26 +321,18 @@ private final class RecordingDelegate: NSObject, AVCaptureFileOutputRecordingDel
 }
 
 private enum MicrophoneError: LocalizedError {
+    case audioFormatUnsupported
     case configurationFailed
     case noWorkingInput
 
     var errorDescription: String? {
         switch self {
+        case .audioFormatUnsupported:
+            "This Mac cannot record Whisper-compatible WAV audio"
         case .configurationFailed:
             "The microphone could not be configured"
         case .noWorkingInput:
             "No connected microphone is producing audio"
-        }
-    }
-}
-
-private enum WhisperError: LocalizedError {
-    case processFailed(String)
-
-    var errorDescription: String? {
-        switch self {
-        case let .processFailed(message):
-            message
         }
     }
 }
