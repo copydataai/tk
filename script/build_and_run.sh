@@ -22,6 +22,7 @@ APP_MACOS="$APP_CONTENTS/MacOS"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
+APP_ICON="$ROOT_DIR/Assets/tk.icns"
 INSTALLED_APP="$HOME/Applications/$APP_NAME.app"
 WHISPER_SOURCE="$ROOT_DIR/.build/vendor/whisper.cpp"
 WHISPER_BUILD="$WHISPER_SOURCE/build-apple"
@@ -138,6 +139,7 @@ rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_RESOURCES"
 cp "$BUILD_BINARY" "$APP_BINARY"
 cp "$WHISPER_BINARY" "$APP_RESOURCES/whisper-cli"
+cp "$APP_ICON" "$APP_RESOURCES/tk.icns"
 KOKORO_RESOURCES="$APP_RESOURCES/kokoro"
 mkdir -p \
   "$KOKORO_RESOURCES/lib" \
@@ -165,6 +167,8 @@ cat >"$INFO_PLIST" <<PLIST
   <string>$BUNDLE_ID</string>
   <key>CFBundleName</key>
   <string>$APP_NAME</string>
+  <key>CFBundleIconFile</key>
+  <string>tk.icns</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>
@@ -176,6 +180,8 @@ cat >"$INFO_PLIST" <<PLIST
 </dict>
 </plist>
 PLIST
+
+/usr/bin/codesign --force --deep --sign - "$APP_BUNDLE"
 
 open_app() {
   /usr/bin/open -n "$APP_BUNDLE"
