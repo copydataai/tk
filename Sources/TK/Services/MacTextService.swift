@@ -27,7 +27,7 @@ enum MacTextError: LocalizedError {
 }
 
 @MainActor
-final class MacTextService {
+final class MacTextService: NSObject {
     static let defaultVoice = "en-US-heart"
 
     var hasAccessibilityPermission: Bool { AXIsProcessTrusted() }
@@ -46,13 +46,34 @@ final class MacTextService {
             .sorted()
     }
 
-    private var speechProcess: Process?
+    private var babylonProcess: Process?
+    private var babylonPort: Int?
+    private var speechRequest: Task<(Data, URLResponse), Error>?
+    private var speechID: UUID?
     private var audioPlayer: AVQueuePlayer?
     private var speechURLs: [URL] = []
 
-    init() {
+    override init() {
         let check = Self.speechChunks(String(repeating: "word ", count: 100))
         assert(check.count == 2 && check.allSatisfy { $0.count <= 350 })
+        super.init()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationWillTerminate),
+            name: NSApplication.willTerminateNotification,
+            object: nil
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        speechRequest?.cancel()
+        if babylonProcess?.isRunning == true {
+            babylonProcess?.terminate()
+        }
+        for speechURL in speechURLs {
+            try? FileManager.default.removeItem(at: speechURL)
+        }
     }
 
     func requestAccessibility() {
@@ -121,82 +142,93 @@ final class MacTextService {
         volume: Float
     ) async throws {
         stopSpeaking()
+        let speechID = UUID()
+        self.speechID = speechID
 
         guard let resources = Bundle.main.resourceURL else {
+            self.speechID = nil
             throw MacTextError.speechFailed("Kokoro runtime is missing; rebuild tk")
         }
-        let runtime = resources.appendingPathComponent("kokoro/babylon")
         let modelDirectory = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         )[0].appendingPathComponent("tk/models", isDirectory: true)
+
+        let serverURL: URL
+        do {
+            serverURL = try await babylonServerURL(
+                resources: resources,
+                modelDirectory: modelDirectory,
+                speechID: speechID
+            )
+        } catch {
+            guard self.speechID == speechID else { throw CancellationError() }
+            stopSpeaking()
+            if error is CancellationError { throw error }
+            throw MacTextError.speechFailed("Could not start Kokoro: \(error.localizedDescription)")
+        }
+
+        let player = AVQueuePlayer()
+        player.volume = min(max(volume, 0), 1)
+        audioPlayer = player
+
         for chunk in Self.speechChunks(text) {
             let output = FileManager.default.temporaryDirectory
                 .appendingPathComponent("tk-speech-\(UUID().uuidString).wav")
             speechURLs.append(output)
-            let process = Process()
-            let errors = Pipe()
-            process.executableURL = runtime
-            process.arguments = [
-                "--phonemizer-model", resources.appendingPathComponent("kokoro/models/open-phonemizer.onnx").path,
-                "--dictionary", resources.appendingPathComponent("kokoro/data/dictionary.json").path,
-                "--kokoro-model", modelDirectory.appendingPathComponent("kokoro-v1.0-fp32.onnx").path,
-                "--kokoro-voices", resources.appendingPathComponent("kokoro/voices").path,
-                "tts",
-                "--voice", voiceIdentifier,
-                "--speed", String(min(max(rate, 0.5), 2)),
-                chunk,
-                "-o", output.path
-            ]
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = errors
-            speechProcess = process
 
-            let status: Int32
+            var request = URLRequest(url: serverURL.appendingPathComponent("tts"))
+            request.httpMethod = "POST"
+            request.timeoutInterval = 120
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "text": chunk,
+                "engine": "kokoro",
+                "voice": voiceIdentifier,
+                "speed": min(max(rate, 0.5), 2)
+            ])
+
+            let data: Data
+            let response: HTTPURLResponse
             do {
-                status = try await withCheckedThrowingContinuation { continuation in
-                    process.terminationHandler = { process in
-                        continuation.resume(returning: process.terminationStatus)
-                    }
-                    do {
-                        try process.run()
-                    } catch {
-                        process.terminationHandler = nil
-                        continuation.resume(throwing: error)
-                    }
-                }
+                (data, response) = try await send(request, speechID: speechID)
             } catch {
+                guard self.speechID == speechID else { throw CancellationError() }
                 stopSpeaking()
-                throw MacTextError.speechFailed("Could not start Kokoro: \(error.localizedDescription)")
+                if (error as? URLError)?.code == .cancelled { throw CancellationError() }
+                throw MacTextError.speechFailed("Kokoro request failed: \(error.localizedDescription)")
             }
 
-            guard speechProcess === process else { throw CancellationError() }
-            speechProcess = nil
-            guard status == 0,
-                  (try? output.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) ?? 0 > 44 else {
-                let detail = String(
-                    data: errors.fileHandleForReading.readDataToEndOfFile(),
-                    encoding: .utf8
-                )?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard self.speechID == speechID else { throw CancellationError() }
+            guard response.statusCode == 200, data.count > 44 else {
+                let detail = (try? JSONSerialization.jsonObject(with: data))
+                    .flatMap { $0 as? [String: Any] }?["error"] as? String
                 stopSpeaking()
                 if let detail, !detail.isEmpty {
                     throw MacTextError.speechFailed(detail)
                 }
                 throw MacTextError.speechFailed("Kokoro could not generate speech")
             }
+
+            do {
+                try data.write(to: output, options: .atomic)
+            } catch {
+                stopSpeaking()
+                throw MacTextError.speechFailed("Could not save Kokoro audio: \(error.localizedDescription)")
+            }
+            player.insert(AVPlayerItem(url: output), after: nil)
+            player.play()
         }
 
-        let player = AVQueuePlayer(items: speechURLs.map(AVPlayerItem.init(url:)))
-        player.volume = min(max(volume, 0), 1)
-        player.play()
-        audioPlayer = player
+        if self.speechID == speechID {
+            self.speechID = nil
+        }
     }
 
     func stopSpeaking() {
-        if speechProcess?.isRunning == true {
-            speechProcess?.terminate()
-        }
-        speechProcess = nil
+        speechID = nil
+        speechRequest?.cancel()
+        speechRequest = nil
         audioPlayer?.pause()
         audioPlayer?.removeAllItems()
         audioPlayer = nil
@@ -204,6 +236,98 @@ final class MacTextService {
             try? FileManager.default.removeItem(at: speechURL)
         }
         speechURLs.removeAll()
+    }
+
+    @objc private func applicationWillTerminate(_ notification: Notification) {
+        stopSpeaking()
+        if babylonProcess?.isRunning == true {
+            babylonProcess?.terminate()
+        }
+        babylonProcess = nil
+    }
+
+    private func babylonServerURL(
+        resources: URL,
+        modelDirectory: URL,
+        speechID: UUID
+    ) async throws -> URL {
+        if let babylonProcess, babylonProcess.isRunning, let babylonPort {
+            return URL(string: "http://127.0.0.1:\(babylonPort)")!
+        }
+
+        babylonProcess = nil
+        babylonPort = nil
+        var lastError: Error = MacTextError.speechFailed("Kokoro did not become ready")
+        for _ in 0..<3 {
+            let port = Int.random(in: 49_152...65_535)
+            let process = Process()
+            process.executableURL = resources.appendingPathComponent("kokoro/babylon")
+            process.arguments = [
+                "--phonemizer-model", resources.appendingPathComponent("kokoro/models/open-phonemizer.onnx").path,
+                "--dictionary", resources.appendingPathComponent("kokoro/data/dictionary.json").path,
+                "--kokoro-model", modelDirectory.appendingPathComponent("kokoro-v1.0-fp32.onnx").path,
+                "--kokoro-voices", resources.appendingPathComponent("kokoro/voices").path,
+                "serve",
+                "--host", "127.0.0.1",
+                "--port", String(port)
+            ]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+            } catch {
+                lastError = error
+                continue
+            }
+            babylonProcess = process
+            babylonPort = port
+
+            let serverURL = URL(string: "http://127.0.0.1:\(port)")!
+            var request = URLRequest(url: serverURL.appendingPathComponent("status"))
+            request.timeoutInterval = 120
+            for _ in 0..<100 {
+                guard self.speechID == speechID else { throw CancellationError() }
+                guard process.isRunning else {
+                    lastError = MacTextError.speechFailed("Kokoro stopped while starting")
+                    break
+                }
+                do {
+                    let (_, response) = try await send(request, speechID: speechID)
+                    guard response.statusCode == 200 else {
+                        throw MacTextError.speechFailed("Kokoro readiness check failed")
+                    }
+                    return serverURL
+                } catch {
+                    guard self.speechID == speechID else { throw CancellationError() }
+                    lastError = error
+                    try await Task.sleep(for: .milliseconds(50))
+                }
+            }
+            if process.isRunning {
+                process.terminate()
+            }
+            babylonProcess = nil
+            babylonPort = nil
+        }
+        throw lastError
+    }
+
+    private func send(
+        _ request: URLRequest,
+        speechID: UUID
+    ) async throws -> (Data, HTTPURLResponse) {
+        let task = Task { try await URLSession.shared.data(for: request) }
+        speechRequest = task
+        defer {
+            if self.speechID == speechID {
+                speechRequest = nil
+            }
+        }
+        let (data, response) = try await task.value
+        guard let response = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        return (data, response)
     }
 
     private static func speechChunks(_ text: String) -> [String] {
