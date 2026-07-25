@@ -22,6 +22,7 @@ APP_MACOS="$APP_CONTENTS/MacOS"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
+INSTALLED_APP="$HOME/Applications/$APP_NAME.app"
 WHISPER_SOURCE="$ROOT_DIR/.build/vendor/whisper.cpp"
 WHISPER_BUILD="$WHISPER_SOURCE/build-apple"
 WHISPER_BINARY="$WHISPER_BUILD/bin/whisper-cli"
@@ -195,6 +196,13 @@ case "$MODE" in
     open_app
     /usr/bin/log stream --info --style compact --predicate "subsystem == \"$BUNDLE_ID\""
     ;;
+  --install|install)
+    mkdir -p "$(dirname "$INSTALLED_APP")"
+    rm -rf "$INSTALLED_APP"
+    /usr/bin/ditto "$APP_BUNDLE" "$INSTALLED_APP"
+    /usr/bin/open -n "$INSTALLED_APP"
+    echo "Installed $APP_NAME to $INSTALLED_APP"
+    ;;
   --verify|verify)
     open_app
     sleep 1
@@ -240,7 +248,7 @@ case "$MODE" in
     /usr/bin/afinfo "$VERIFY_DIR/speech.wav" | grep -q "24000 Hz"
     ;;
   *)
-    echo "usage: $0 [run|--debug|--logs|--telemetry|--verify]" >&2
+    echo "usage: $0 [run|--install|--debug|--logs|--telemetry|--verify]" >&2
     exit 2
     ;;
 esac
