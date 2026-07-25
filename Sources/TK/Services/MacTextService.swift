@@ -8,6 +8,7 @@ enum MacTextError: LocalizedError {
     case noFocusedControl
     case noSelectedText
     case eventCreationFailed
+    case speechFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -19,19 +20,39 @@ enum MacTextError: LocalizedError {
             "Select some text first"
         case .eventCreationFailed:
             "macOS could not send the keyboard event"
+        case .speechFailed(let message):
+            message
         }
     }
 }
 
 @MainActor
 final class MacTextService {
-    private let speechSynthesizer = AVSpeechSynthesizer()
+    static let defaultVoice = "en-US-heart"
 
     var hasAccessibilityPermission: Bool { AXIsProcessTrusted() }
-    var availableVoices: [AVSpeechSynthesisVoice] {
-        AVSpeechSynthesisVoice.speechVoices().sorted {
-            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+    static var availableVoices: [String] {
+        guard let directory = Bundle.main.resourceURL?
+            .appendingPathComponent("kokoro/voices", isDirectory: true),
+              let files = try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil
+              ) else {
+            return [defaultVoice]
         }
+        return files
+            .filter { $0.pathExtension == "bin" }
+            .map { $0.deletingPathExtension().lastPathComponent }
+            .sorted()
+    }
+
+    private var speechProcess: Process?
+    private var audioPlayer: AVQueuePlayer?
+    private var speechURLs: [URL] = []
+
+    init() {
+        let check = Self.speechChunks(String(repeating: "word ", count: 100))
+        assert(check.count == 2 && check.allSatisfy { $0.count <= 350 })
     }
 
     func requestAccessibility() {
@@ -97,22 +118,123 @@ final class MacTextService {
         _ text: String,
         voiceIdentifier: String,
         rate: Float,
-        pitch: Float,
         volume: Float
-    ) {
-        speechSynthesizer.stopSpeaking(at: .immediate)
-        let utterance = AVSpeechUtterance(string: text)
-        if !voiceIdentifier.isEmpty {
-            utterance.voice = AVSpeechSynthesisVoice(identifier: voiceIdentifier)
+    ) async throws {
+        stopSpeaking()
+
+        guard let resources = Bundle.main.resourceURL else {
+            throw MacTextError.speechFailed("Kokoro runtime is missing; rebuild tk")
         }
-        utterance.rate = min(max(rate, AVSpeechUtteranceMinimumSpeechRate), AVSpeechUtteranceMaximumSpeechRate)
-        utterance.pitchMultiplier = min(max(pitch, 0.5), 2)
-        utterance.volume = min(max(volume, 0), 1)
-        speechSynthesizer.speak(utterance)
+        let runtime = resources.appendingPathComponent("kokoro/babylon")
+        let modelDirectory = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0].appendingPathComponent("tk/models", isDirectory: true)
+        for chunk in Self.speechChunks(text) {
+            let output = FileManager.default.temporaryDirectory
+                .appendingPathComponent("tk-speech-\(UUID().uuidString).wav")
+            speechURLs.append(output)
+            let process = Process()
+            let errors = Pipe()
+            process.executableURL = runtime
+            process.arguments = [
+                "--phonemizer-model", resources.appendingPathComponent("kokoro/models/open-phonemizer.onnx").path,
+                "--dictionary", resources.appendingPathComponent("kokoro/data/dictionary.json").path,
+                "--kokoro-model", modelDirectory.appendingPathComponent("kokoro-v1.0-fp32.onnx").path,
+                "--kokoro-voices", resources.appendingPathComponent("kokoro/voices").path,
+                "tts",
+                "--voice", voiceIdentifier,
+                "--speed", String(min(max(rate, 0.5), 2)),
+                chunk,
+                "-o", output.path
+            ]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = errors
+            speechProcess = process
+
+            let status: Int32
+            do {
+                status = try await withCheckedThrowingContinuation { continuation in
+                    process.terminationHandler = { process in
+                        continuation.resume(returning: process.terminationStatus)
+                    }
+                    do {
+                        try process.run()
+                    } catch {
+                        process.terminationHandler = nil
+                        continuation.resume(throwing: error)
+                    }
+                }
+            } catch {
+                stopSpeaking()
+                throw MacTextError.speechFailed("Could not start Kokoro: \(error.localizedDescription)")
+            }
+
+            guard speechProcess === process else { throw CancellationError() }
+            speechProcess = nil
+            guard status == 0,
+                  (try? output.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) ?? 0 > 44 else {
+                let detail = String(
+                    data: errors.fileHandleForReading.readDataToEndOfFile(),
+                    encoding: .utf8
+                )?.trimmingCharacters(in: .whitespacesAndNewlines)
+                stopSpeaking()
+                if let detail, !detail.isEmpty {
+                    throw MacTextError.speechFailed(detail)
+                }
+                throw MacTextError.speechFailed("Kokoro could not generate speech")
+            }
+        }
+
+        let player = AVQueuePlayer(items: speechURLs.map(AVPlayerItem.init(url:)))
+        player.volume = min(max(volume, 0), 1)
+        player.play()
+        audioPlayer = player
     }
 
     func stopSpeaking() {
-        speechSynthesizer.stopSpeaking(at: .immediate)
+        if speechProcess?.isRunning == true {
+            speechProcess?.terminate()
+        }
+        speechProcess = nil
+        audioPlayer?.pause()
+        audioPlayer?.removeAllItems()
+        audioPlayer = nil
+        for speechURL in speechURLs {
+            try? FileManager.default.removeItem(at: speechURL)
+        }
+        speechURLs.removeAll()
+    }
+
+    private static func speechChunks(_ text: String) -> [String] {
+        var chunks: [String] = []
+        var chunk = ""
+
+        for wordSlice in text.split(whereSeparator: \.isWhitespace) {
+            var word = String(wordSlice)
+            while word.count > 350 {
+                if !chunk.isEmpty {
+                    chunks.append(chunk)
+                    chunk = ""
+                }
+                let end = word.index(word.startIndex, offsetBy: 350)
+                chunks.append(String(word[..<end]))
+                word = String(word[end...])
+            }
+            guard !word.isEmpty else { continue }
+            if chunk.isEmpty {
+                chunk = word
+            } else if chunk.count + word.count < 350 {
+                chunk += " \(word)"
+            } else {
+                chunks.append(chunk)
+                chunk = word
+            }
+        }
+        if !chunk.isEmpty {
+            chunks.append(chunk)
+        }
+        return chunks
     }
 
     private var focusedElement: AXUIElement? {

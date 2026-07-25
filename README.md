@@ -1,22 +1,24 @@
 # tk
 
-`tk` is a lightweight, privacy-first macOS app for voice and text. It uses Apple's on-device speech recognition, so dictation stays on your Mac.
+`tk` is a privacy-first macOS app for voice and text. Dictation runs locally with Whisper large-v3-turbo Q5 and reading uses Kokoro 82M FP32, so speech and text stay on your Mac.
 
 ## What it does
 
 - Press a global shortcut, speak, and press it again to insert the transcription wherever the text cursor is active.
 - Select text in another app and read it aloud with a second global shortcut.
-- Choose any installed macOS voice and adjust its speed, pitch, and volume.
+- Choose from Kokoro's multilingual voices and adjust speed and volume.
 - Choose shortcut presets from the app window.
 - Keep running from the menu bar.
 
 ## Requirements
 
 - macOS 14 or newer
-- A language supported by macOS on-device speech recognition
-- Microphone, Speech Recognition, and Accessibility permissions
+- Apple silicon with at least 16 GB of memory; 24 GB is recommended
+- Xcode command-line tools, CMake, Git, and curl
+- About 1.1 GB of disk space for the app and cached speech models
+- Microphone and Accessibility permissions
 
-`tk` never falls back to cloud recognition. If macOS does not provide an on-device recognizer for the current language, the app reports that instead.
+`tk` never falls back to cloud recognition. The multilingual model detects the spoken language automatically.
 
 ## Run locally
 
@@ -24,7 +26,7 @@
 ./script/build_and_run.sh
 ```
 
-The script builds the Swift package, creates `dist/tk.app`, and launches it. The Codex **Run** action calls the same script.
+On first use, the script builds pinned Whisper and Babylon ONNX runtimes, downloads and verifies the Whisper and full-precision Kokoro models, creates `dist/tk.app`, and launches it. The first native build also needs several GB of temporary build space; later builds reuse the cached artifacts. The Codex **Run** action calls the same script.
 
 To build without launching:
 
@@ -42,7 +44,7 @@ To build, launch, and confirm that the process started:
 
 1. Open `tk` and click **Enable…**.
 2. Allow `tk` under **System Settings → Privacy & Security → Accessibility**.
-3. Press the dictation shortcut once and approve Microphone and Speech Recognition access.
+3. Press the dictation shortcut once and approve Microphone access.
 4. Place the cursor in another app, press the shortcut, speak, then press it again to insert.
 5. To hear text, select it in another app and press the read shortcut.
 
@@ -55,4 +57,4 @@ Default shortcuts:
 
 ## Current scope
 
-This first version uses the speech model already supplied by macOS rather than bundling a separate model runtime. Reading and insertion work in apps that expose text through macOS Accessibility; `tk` falls back to copy/paste events for other standard text controls while restoring the clipboard afterward.
+Dictation is processed after recording stops, rather than streamed while speaking. Reading and insertion work in apps that expose text through macOS Accessibility; `tk` falls back to copy/paste events for other standard text controls while restoring the clipboard afterward.

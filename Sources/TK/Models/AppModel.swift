@@ -1,4 +1,3 @@
-import AVFoundation
 import Foundation
 import Observation
 
@@ -14,22 +13,18 @@ final class AppModel {
     var accessibilityGranted = false
 
     var voiceIdentifier: String {
-        didSet { UserDefaults.standard.set(voiceIdentifier, forKey: "voiceIdentifier") }
+        didSet { UserDefaults.standard.set(voiceIdentifier, forKey: "kokoroVoiceIdentifier") }
     }
 
     var speechRate: Double {
-        didSet { UserDefaults.standard.set(speechRate, forKey: "speechRate") }
-    }
-
-    var speechPitch: Double {
-        didSet { UserDefaults.standard.set(speechPitch, forKey: "speechPitch") }
+        didSet { UserDefaults.standard.set(speechRate, forKey: "kokoroSpeechRate") }
     }
 
     var speechVolume: Double {
         didSet { UserDefaults.standard.set(speechVolume, forKey: "speechVolume") }
     }
 
-    var availableVoices: [AVSpeechSynthesisVoice] { macText.availableVoices }
+    var availableVoices: [String] { MacTextService.availableVoices }
 
     var dictationShortcut: HotKeyOption {
         didSet {
@@ -46,15 +41,14 @@ final class AppModel {
     }
 
     init() {
-        let savedVoice = UserDefaults.standard.string(forKey: "voiceIdentifier") ?? ""
-        voiceIdentifier = savedVoice.isEmpty || AVSpeechSynthesisVoice(identifier: savedVoice) != nil
+        let savedVoice = UserDefaults.standard.string(forKey: "kokoroVoiceIdentifier") ?? ""
+        voiceIdentifier = MacTextService.availableVoices.contains(savedVoice)
             ? savedVoice
-            : ""
+            : MacTextService.defaultVoice
         speechRate = min(max(Self.savedDouble(
-            key: "speechRate",
-            fallback: Double(AVSpeechUtteranceDefaultSpeechRate)
-        ), 0), 1)
-        speechPitch = min(max(Self.savedDouble(key: "speechPitch", fallback: 1), 0.5), 2)
+            key: "kokoroSpeechRate",
+            fallback: 1
+        ), 0.5), 2)
         speechVolume = min(max(Self.savedDouble(key: "speechVolume", fallback: 1), 0), 1)
         dictationShortcut = Self.savedShortcut(
             key: "dictationShortcut",
@@ -96,14 +90,15 @@ final class AppModel {
         Task {
             do {
                 let text = try await macText.selectedText()
-                macText.speak(
+                statusMessage = "Generating speech"
+                try await macText.speak(
                     text,
                     voiceIdentifier: voiceIdentifier,
                     rate: Float(speechRate),
-                    pitch: Float(speechPitch),
                     volume: Float(speechVolume)
                 )
                 statusMessage = "Reading selection"
+            } catch is CancellationError {
             } catch {
                 statusMessage = error.localizedDescription
             }

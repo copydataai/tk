@@ -6,9 +6,14 @@ struct MenuBarView: View {
     let model: AppModel
 
     var body: some View {
-        Button(model.dictation.isRecording ? "Stop & Insert" : "Start Dictation") {
+        Button(
+            model.dictation.isTranscribing
+                ? "Transcribing…"
+                : model.dictation.isRecording ? "Stop & Insert" : "Start Dictation"
+        ) {
             model.toggleDictation()
         }
+        .disabled(model.dictation.isTranscribing)
         Button("Read Selection") {
             model.readSelection()
         }

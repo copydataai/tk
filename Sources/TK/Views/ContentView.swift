@@ -1,5 +1,4 @@
 import AppKit
-import AVFoundation
 import SwiftUI
 
 struct ContentView: View {
@@ -31,10 +30,15 @@ struct ContentView: View {
                         }
                         .frame(width: 190)
                         Spacer()
-                        Button(model.dictation.isRecording ? "Stop & Insert" : "Start Dictation") {
+                        Button(
+                            model.dictation.isTranscribing
+                                ? "Transcribing…"
+                                : model.dictation.isRecording ? "Stop & Insert" : "Start Dictation"
+                        ) {
                             model.toggleDictation()
                         }
                         .buttonStyle(.borderedProminent)
+                        .disabled(model.dictation.isTranscribing)
                     }
                     if !model.dictation.transcript.isEmpty {
                         Text(model.dictation.transcript)
@@ -71,9 +75,8 @@ struct ContentView: View {
                         GridRow {
                             Text("Voice")
                             Picker("Voice", selection: $model.voiceIdentifier) {
-                                Text("System Default").tag("")
-                                ForEach(model.availableVoices, id: \.identifier) { voice in
-                                    Text("\(voice.name) — \(voice.language)").tag(voice.identifier)
+                                ForEach(model.availableVoices, id: \.self) { voice in
+                                    Text(voice).tag(voice)
                                 }
                             }
                             .labelsHidden()
@@ -83,18 +86,9 @@ struct ContentView: View {
                             HStack {
                                 Slider(
                                     value: $model.speechRate,
-                                    in: Double(AVSpeechUtteranceMinimumSpeechRate)...Double(AVSpeechUtteranceMaximumSpeechRate)
+                                    in: 0.5...2
                                 )
                                 Text(model.speechRate, format: .number.precision(.fractionLength(2)))
-                                    .monospacedDigit()
-                                    .frame(width: 34, alignment: .trailing)
-                            }
-                        }
-                        GridRow {
-                            Text("Pitch")
-                            HStack {
-                                Slider(value: $model.speechPitch, in: 0.5...2)
-                                Text(model.speechPitch, format: .number.precision(.fractionLength(2)))
                                     .monospacedDigit()
                                     .frame(width: 34, alignment: .trailing)
                             }
