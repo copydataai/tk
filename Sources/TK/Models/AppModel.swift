@@ -27,6 +27,10 @@ final class AppModel {
         didSet { UserDefaults.standard.set(speechVolume, forKey: "speechVolume") }
     }
 
+    var transcriptionLanguageCode: String? {
+        didSet { UserDefaults.standard.set(transcriptionLanguageCode, forKey: "transcriptionLanguageCode") }
+    }
+
     var availableVoices: [String] { MacTextService.availableVoices }
 
     var dictationShortcut: HotKeyOption {
@@ -53,6 +57,9 @@ final class AppModel {
             fallback: 1
         ), 0.5), 2)
         speechVolume = min(max(Self.savedDouble(key: "speechVolume", fallback: 1), 0), 1)
+        transcriptionLanguageCode = UserDefaults.standard.string(
+            forKey: "transcriptionLanguageCode"
+        )
         dictationShortcut = Self.savedShortcut(
             key: "dictationShortcut",
             fallback: .controlOptionSpace
@@ -91,7 +98,7 @@ final class AppModel {
             requestAccessibility()
             return
         }
-        dictation.toggle()
+        dictation.toggle(language: transcriptionLanguageCode)
     }
 
     func cancelDictation() {

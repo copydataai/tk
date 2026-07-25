@@ -371,6 +371,23 @@ private struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section("Dictation") {
+                Picker("Transcription language", selection: $model.transcriptionLanguageCode) {
+                    Text("Auto").tag(String?.none)
+                    Text("English").tag(String?.some("en"))
+                    Text("Spanish").tag(String?.some("es"))
+                    Text("French").tag(String?.some("fr"))
+                    Text("German").tag(String?.some("de"))
+                    Text("Italian").tag(String?.some("it"))
+                    Text("Portuguese").tag(String?.some("pt"))
+                    Text("Japanese").tag(String?.some("ja"))
+                    Text("Chinese").tag(String?.some("zh"))
+                }
+                Text("Auto detects the spoken language. Choose one to improve recognition when you know it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Shortcuts") {
                 Picker("Dictation", selection: $model.dictationShortcut) {
                     ForEach(HotKeyOption.dictationChoices) { shortcut in
