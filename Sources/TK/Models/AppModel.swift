@@ -109,6 +109,24 @@ final class AppModel {
         }
     }
 
+    func previewVoice(_ identifier: String) {
+        Task {
+            do {
+                statusMessage = "Generating voice preview"
+                try await macText.speak(
+                    Self.previewText(for: identifier),
+                    voiceIdentifier: identifier,
+                    rate: Float(speechRate),
+                    volume: Float(speechVolume)
+                )
+                statusMessage = "Playing voice preview"
+            } catch is CancellationError {
+            } catch {
+                statusMessage = error.localizedDescription
+            }
+        }
+    }
+
     func stopSpeaking() {
         macText.stopSpeaking()
         statusMessage = "Stopped reading"
@@ -150,5 +168,18 @@ final class AppModel {
     private static func savedDouble(key: String, fallback: Double) -> Double {
         guard UserDefaults.standard.object(forKey: key) != nil else { return fallback }
         return UserDefaults.standard.double(forKey: key)
+    }
+
+    private static func previewText(for voice: String) -> String {
+        switch String(voice.prefix(2)) {
+        case "de": "Hallo, so klingt meine Stimme."
+        case "el": "Γεια σας, έτσι ακούγεται η φωνή μου."
+        case "fr": "Bonjour, voici un aperçu de ma voix."
+        case "it": "Ciao, ecco un'anteprima della mia voce."
+        case "ja": "こんにちは、私の声はこのように聞こえます。"
+        case "pt": "Olá, esta é uma prévia da minha voz."
+        case "zh": "你好，这是我的声音预览。"
+        default: "Hi, this is a preview of my voice."
+        }
     }
 }

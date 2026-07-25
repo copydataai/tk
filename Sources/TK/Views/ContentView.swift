@@ -236,11 +236,7 @@ private struct ReadAloudView: View {
             }
 
             Section("Voice") {
-                Picker("Voice", selection: $model.voiceIdentifier) {
-                    ForEach(model.availableVoices, id: \.self) { voice in
-                        Text(voice).tag(voice)
-                    }
-                }
+                VoicePicker(model: model)
                 SliderRow(
                     title: "Speed",
                     value: $model.speechRate,
@@ -261,6 +257,70 @@ private struct ReadAloudView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Read aloud")
+    }
+}
+
+private struct VoicePicker: View {
+    @Bindable var model: AppModel
+    @State private var localeIdentifier: String
+
+    init(model: AppModel) {
+        self.model = model
+        localeIdentifier = Self.localeIdentifier(for: model.voiceIdentifier)
+        assert(
+            Self.localeIdentifier(for: "en-US-heart") == "en_US"
+                && Self.voiceName(for: "en-US-heart") == "Heart"
+        )
+    }
+
+    var body: some View {
+        Picker("Language", selection: $localeIdentifier) {
+            ForEach(localeIdentifiers, id: \.self) { identifier in
+                Text(Self.localeName(for: identifier)).tag(identifier)
+            }
+        }
+
+        Picker("Voice", selection: $model.voiceIdentifier) {
+            ForEach(voices, id: \.self) { voice in
+                Text(Self.voiceName(for: voice)).tag(voice)
+            }
+        }
+
+        Button {
+            model.previewVoice(model.voiceIdentifier)
+        } label: {
+            Label("Preview voice", systemImage: "play.fill")
+        }
+        .onChange(of: localeIdentifier) {
+            guard !voices.contains(model.voiceIdentifier),
+                  let first = voices.first else { return }
+            model.voiceIdentifier = first
+        }
+    }
+
+    private var localeIdentifiers: [String] {
+        Array(Set(model.availableVoices.map(Self.localeIdentifier(for:)))).sorted {
+            Self.localeName(for: $0) < Self.localeName(for: $1)
+        }
+    }
+
+    private var voices: [String] {
+        model.availableVoices
+            .filter { Self.localeIdentifier(for: $0) == localeIdentifier }
+    }
+
+    private static func localeIdentifier(for voice: String) -> String {
+        voice.split(separator: "-").prefix(2).joined(separator: "_")
+    }
+
+    private static func localeName(for identifier: String) -> String {
+        Locale.current.localizedString(forIdentifier: identifier) ?? identifier
+    }
+
+    private static func voiceName(for identifier: String) -> String {
+        identifier.split(separator: "-").dropFirst(2)
+            .joined(separator: " ")
+            .capitalized
     }
 }
 
