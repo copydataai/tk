@@ -81,6 +81,10 @@ final class AppModel {
         dictation.toggle()
     }
 
+    func cancelDictation() {
+        dictation.cancel()
+    }
+
     func readSelection() {
         guard accessibilityGranted else {
             requestAccessibility()

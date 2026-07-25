@@ -19,6 +19,11 @@ struct TKApp: App {
         }
         .defaultSize(width: 920, height: 680)
 
+        Window("tk Flow Bar", id: "flow-bar") {
+            FlowBarView(model: model)
+        }
+        .windowResizability(.contentSize)
+
         MenuBarExtra {
             MenuBarView(model: model)
         } label: {

@@ -28,6 +28,12 @@ final class DictationService {
         }
     }
 
+    func cancel() {
+        guard let recordingURL = stopRecording() else { return }
+        try? FileManager.default.removeItem(at: recordingURL)
+        status = "Dictation cancelled"
+    }
+
     private func requestMicrophonePermission() {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
@@ -86,13 +92,7 @@ final class DictationService {
     }
 
     private func finish() {
-        guard isRecording, let recordingURL else { return }
-
-        audioEngine.stop()
-        audioEngine.inputNode.removeTap(onBus: 0)
-        audioFile = nil
-        self.recordingURL = nil
-        isRecording = false
+        guard let recordingURL = stopRecording() else { return }
 
         guard let executableURL = Bundle.main.url(forResource: "whisper-cli", withExtension: nil) else {
             try? FileManager.default.removeItem(at: recordingURL)
@@ -136,6 +136,16 @@ final class DictationService {
                 status = "Dictation failed: \(error.localizedDescription)"
             }
         }
+    }
+
+    private func stopRecording() -> URL? {
+        guard isRecording, let recordingURL else { return nil }
+        audioEngine.stop()
+        audioEngine.inputNode.removeTap(onBus: 0)
+        audioFile = nil
+        self.recordingURL = nil
+        isRecording = false
+        return recordingURL
     }
 
     nonisolated private static func transcribe(

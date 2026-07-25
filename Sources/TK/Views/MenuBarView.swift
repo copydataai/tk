@@ -23,6 +23,9 @@ struct MenuBarView: View {
 
         Divider()
 
+        Button("Show Flow Bar") {
+            openWindow(id: "flow-bar")
+        }
         Button("Open tk") {
             openWindow(id: "main")
             NSApp.activate(ignoringOtherApps: true)

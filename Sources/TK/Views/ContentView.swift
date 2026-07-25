@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-private let flowAccent = Color(red: 1, green: 0.38, blue: 0.27)
+let flowAccent = Color(red: 1, green: 0.38, blue: 0.27)
 
 private enum HubSection: String, CaseIterable, Identifiable {
     case home = "Home"
@@ -20,8 +20,10 @@ private enum HubSection: String, CaseIterable, Identifiable {
 }
 
 struct ContentView: View {
+    @Environment(\.openWindow) private var openWindow
     @Bindable var model: AppModel
     @State private var selection: HubSection? = .home
+    @State private var didOpenFlowBar = false
 
     var body: some View {
         NavigationSplitView {
@@ -68,7 +70,13 @@ struct ContentView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .tint(flowAccent)
         .frame(minWidth: 780, minHeight: 560)
+        .onAppear {
+            guard !didOpenFlowBar else { return }
+            didOpenFlowBar = true
+            openWindow(id: "flow-bar")
+        }
         .onReceive(
             NotificationCenter.default.publisher(
                 for: NSApplication.didBecomeActiveNotification
@@ -179,6 +187,7 @@ private struct HomeView: View {
             .padding(32)
             .frame(maxWidth: 820, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.35))
     }
 
