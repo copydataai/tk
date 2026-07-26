@@ -98,6 +98,9 @@ final class AppModel {
             requestAccessibility()
             return
         }
+        if !dictation.isRecording && !dictation.isTranscribing {
+            macText.rememberInsertionTarget()
+        }
         dictation.toggle(language: transcriptionLanguageCode)
     }
 

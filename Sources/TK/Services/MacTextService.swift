@@ -52,6 +52,7 @@ final class MacTextService: NSObject {
     private var speechID: UUID?
     private var audioPlayer: AVQueuePlayer?
     private var speechURLs: [URL] = []
+    private var insertionTarget: AXUIElement?
 
     override init() {
         let check = Self.speechChunks(String(repeating: "word ", count: 100))
@@ -81,17 +82,36 @@ final class MacTextService: NSObject {
         AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary)
     }
 
+    func rememberInsertionTarget() {
+        insertionTarget = focusedElement
+    }
+
     func insert(_ text: String) async throws {
         guard hasAccessibilityPermission else { throw MacTextError.accessibilityRequired }
         guard !text.isEmpty else { return }
 
-        if let focusedElement,
+        let target = insertionTarget ?? focusedElement
+        insertionTarget = nil
+        if let target,
            AXUIElementSetAttributeValue(
-               focusedElement,
+               target,
                kAXSelectedTextAttribute as CFString,
                text as CFTypeRef
            ) == .success {
             return
+        }
+
+        if let target {
+            var processIdentifier: pid_t = 0
+            if AXUIElementGetPid(target, &processIdentifier) == .success {
+                NSRunningApplication(processIdentifier: processIdentifier)?.activate()
+            }
+            AXUIElementSetAttributeValue(
+                target,
+                kAXFocusedAttribute as CFString,
+                kCFBooleanTrue
+            )
+            try await Task.sleep(for: .milliseconds(50))
         }
 
         let pasteboard = NSPasteboard.general
