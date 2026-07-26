@@ -227,7 +227,6 @@ final class MacTextService: NSObject {
 
     func stopSpeaking() {
         speechID = nil
-        speechRequest?.cancel()
         speechRequest = nil
         audioPlayer?.pause()
         audioPlayer?.removeAllItems()
@@ -262,6 +261,7 @@ final class MacTextService: NSObject {
             let port = Int.random(in: 49_152...65_535)
             let process = Process()
             process.executableURL = resources.appendingPathComponent("kokoro/babylon")
+            process.currentDirectoryURL = FileManager.default.temporaryDirectory
             process.arguments = [
                 "--phonemizer-model", resources.appendingPathComponent("kokoro/models/open-phonemizer.onnx").path,
                 "--dictionary", resources.appendingPathComponent("kokoro/data/dictionary.json").path,
