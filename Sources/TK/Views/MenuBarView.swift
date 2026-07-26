@@ -27,8 +27,11 @@ struct MenuBarView: View {
             openWindow(id: "flow-bar")
         }
         Button("Open tk") {
-            openWindow(id: "main")
             NSApp.activate(ignoringOtherApps: true)
+            DispatchQueue.main.async {
+                openWindow(id: "main")
+                revealMainWindow()
+            }
         }
         Button("Quit") {
             NSApplication.shared.terminate(nil)
