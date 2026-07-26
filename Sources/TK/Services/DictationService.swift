@@ -74,7 +74,7 @@ final class DictationService {
                 }.value
                 let url = FileManager.default.temporaryDirectory
                     .appendingPathComponent("tk-\(UUID().uuidString)")
-                    .appendingPathExtension("wav")
+                    .appendingPathExtension("caf")
                 let delegate = RecordingDelegate { [weak self] url, error in
                     Task { @MainActor in
                         self?.recordingDidFinish(at: url, error: error)
@@ -91,7 +91,7 @@ final class DictationService {
                 isRecording = true
                 setup.output.startRecording(
                     to: url,
-                    outputFileType: .wav,
+                    outputFileType: .caf,
                     recordingDelegate: delegate
                 )
                 status = "Listening on \(setup.deviceName) — press the shortcut again to insert"
@@ -142,13 +142,20 @@ final class DictationService {
         status = "Transcribing locally…"
 
         Task {
+            let wavURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("tk-\(UUID().uuidString)")
+                .appendingPathExtension("wav")
             defer {
                 try? FileManager.default.removeItem(at: recordingURL)
+                try? FileManager.default.removeItem(at: wavURL)
                 isTranscribing = false
             }
             do {
+                try await Task.detached {
+                    try Self.convertToWhisperWAV(recordingURL, outputURL: wavURL)
+                }.value
                 let text = try await WhisperRuntime.shared.transcribe(
-                    wavURL: recordingURL,
+                    wavURL: wavURL,
                     language: language ?? "auto"
                 )
                 transcript = text
@@ -165,9 +172,6 @@ final class DictationService {
     }
 
     nonisolated private static func prepareCapture() throws -> CaptureSetup {
-        guard AVCaptureAudioFileOutput.availableOutputFileTypes().contains(.wav) else {
-            throw MicrophoneError.audioFormatUnsupported
-        }
         let discovery = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.microphone, .external],
             mediaType: .audio,
@@ -211,15 +215,6 @@ final class DictationService {
         let session = AVCaptureSession()
         let input = try AVCaptureDeviceInput(device: device)
         let output = AVCaptureAudioFileOutput()
-        output.audioSettings = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: 16_000,
-            AVNumberOfChannelsKey: 1,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsBigEndianKey: false,
-            AVLinearPCMIsNonInterleaved: false,
-        ]
         guard session.canAddInput(input), session.canAddOutput(output) else {
             throw MicrophoneError.configurationFailed
         }
@@ -277,6 +272,35 @@ final class DictationService {
         guard let error = error as NSError? else { return true }
         return error.userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool == true
     }
+
+    nonisolated private static func convertToWhisperWAV(
+        _ recordingURL: URL,
+        outputURL: URL
+    ) throws {
+        let process = Process()
+        let errors = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
+        process.arguments = [
+            recordingURL.path,
+            outputURL.path,
+            "-f", "WAVE",
+            "-d", "LEI16@16000",
+            "-c", "1",
+        ]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = errors
+        try process.run()
+        let errorData = errors.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            let message = String(data: errorData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw MicrophoneError.conversionFailed(
+                message.flatMap { $0.isEmpty ? nil : $0 }
+                    ?? "afconvert exited with status \(process.terminationStatus)"
+            )
+        }
+    }
 }
 
 private struct CaptureSetup: @unchecked Sendable {
@@ -321,16 +345,16 @@ private final class RecordingDelegate: NSObject, AVCaptureFileOutputRecordingDel
 }
 
 private enum MicrophoneError: LocalizedError {
-    case audioFormatUnsupported
     case configurationFailed
+    case conversionFailed(String)
     case noWorkingInput
 
     var errorDescription: String? {
         switch self {
-        case .audioFormatUnsupported:
-            "This Mac cannot record Whisper-compatible WAV audio"
         case .configurationFailed:
             "The microphone could not be configured"
+        case let .conversionFailed(message):
+            message
         case .noWorkingInput:
             "No connected microphone is producing audio"
         }
