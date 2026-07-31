@@ -11,7 +11,6 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "TK",
-            path: "Sources/TK",
             linkerSettings: [
                 .linkedLibrary("sqlite3")
             ]

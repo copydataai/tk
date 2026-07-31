@@ -1,7 +1,7 @@
 import Carbon.HIToolbox
 import Foundation
 
-enum HotKeyOption: String, CaseIterable, Identifiable {
+enum HotKeyOption: String, Identifiable {
     case controlOptionSpace
     case controlOptionD
     case commandShiftD

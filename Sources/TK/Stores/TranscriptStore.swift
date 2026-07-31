@@ -1,7 +1,7 @@
 import Foundation
 import SQLite3
 
-struct TranscriptRecord: Equatable, Identifiable {
+struct TranscriptRecord: Identifiable {
     let id: Int64
     let text: String
     let createdAt: Date
