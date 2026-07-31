@@ -1,0 +1,15 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift test
+      - run: bash -n script/build_and_run.sh
+      - run: plutil -lint Assets/tk.entitlements
+      - run: ./script/build_and_run.sh --help | grep -q -- --release
