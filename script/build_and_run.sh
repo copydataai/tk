@@ -2,8 +2,28 @@
 set -euo pipefail
 
 MODE="${1:-run}"
+
+usage() {
+  echo "usage: $0 [run|--build|--install|--debug|--logs|--telemetry|--verify|--dmg|--release|--help]"
+}
+
+case "$MODE" in
+  run|--build|build|--debug|debug|--logs|logs|--telemetry|telemetry|--install|install|--verify|verify|--dmg|dmg|--release|release)
+    ;;
+  --help|-h|help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+
 APP_NAME="tk"
 BUNDLE_ID="com.local.tk"
+VERSION="${TK_VERSION:-0.1.0}"
+BUILD_NUMBER="${TK_BUILD_NUMBER:-1}"
 MIN_SYSTEM_VERSION="14.0"
 WHISPER_VERSION="v1.9.1"
 MODEL_NAME="ggml-large-v3-turbo-q5_0.bin"
@@ -23,6 +43,8 @@ APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 APP_ICON="$ROOT_DIR/Assets/tk.icns"
+ENTITLEMENTS="$ROOT_DIR/Assets/tk.entitlements"
+DMG_PATH="$DIST_DIR/$APP_NAME-$VERSION.dmg"
 INSTALLED_APP="$HOME/Applications/$APP_NAME.app"
 WHISPER_SOURCE="$ROOT_DIR/.build/vendor/whisper.cpp"
 WHISPER_BUILD="$WHISPER_SOURCE/build-apple"
@@ -33,6 +55,7 @@ BABYLON_BIN="$BABYLON_SOURCE/bin-apple"
 BABYLON_BINARY="$BABYLON_BIN/babylon"
 MODEL_DIR="$HOME/Library/Application Support/tk/models"
 WHISPER_PID_FILE="$HOME/Library/Application Support/tk/whisper-server.pid"
+BABYLON_PID_FILE="$HOME/Library/Application Support/tk/babylon-server.pid"
 MODEL_FILE="$MODEL_DIR/$MODEL_NAME"
 MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$MODEL_NAME"
 VAD_MODEL_FILE="$MODEL_DIR/$VAD_MODEL_NAME"
@@ -40,20 +63,109 @@ VAD_MODEL_URL="https://huggingface.co/ggml-org/whisper-vad/resolve/main/$VAD_MOD
 KOKORO_MODEL_FILE="$MODEL_DIR/$KOKORO_MODEL_NAME"
 KOKORO_MODEL_URL="https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/1939ad2a8e416c0acfeecc08a694d14ef25f2231/onnx/model.onnx"
 
-if [[ -f "$WHISPER_PID_FILE" ]]; then
-  read -r WHISPER_PID <"$WHISPER_PID_FILE" || true
-  if [[ "$WHISPER_PID" =~ ^[0-9]+$ ]] &&
-     [[ "$(ps -p "$WHISPER_PID" -o command= 2>/dev/null || true)" == *"/whisper-server"* ]]; then
-    kill "$WHISPER_PID" >/dev/null 2>&1 || true
-  fi
-  rm -f "$WHISPER_PID_FILE"
+if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || [[ ! "$BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
+  echo "TK_VERSION must be a dotted number and TK_BUILD_NUMBER must be an integer." >&2
+  exit 2
 fi
+
+SIGNING_IDENTITY="${TK_SIGNING_IDENTITY:-}"
+NOTARY_PROFILE="${TK_NOTARY_PROFILE:-}"
+if [[ "$MODE" == "--release" || "$MODE" == "release" ]]; then
+  if [[ -z "$SIGNING_IDENTITY" || -z "$NOTARY_PROFILE" ]]; then
+    echo "Set TK_SIGNING_IDENTITY and TK_NOTARY_PROFILE before building a release." >&2
+    exit 2
+  fi
+  if ! security find-identity -p codesigning -v | grep -F "$SIGNING_IDENTITY" | grep -Fq "Developer ID Application:"; then
+    echo "TK_SIGNING_IDENTITY must name an installed Developer ID Application identity." >&2
+    exit 2
+  fi
+  if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null; then
+    echo "TK_NOTARY_PROFILE is not a usable notarytool keychain profile." >&2
+    exit 2
+  fi
+fi
+
+stop_recorded_process() {
+  local record_file="$1"
+  local executable_name="$2"
+  local process_identifier=""
+  local executable_path=""
+
+  [[ -f "$record_file" ]] || return 0
+  process_identifier="$(/usr/bin/plutil -extract processIdentifier raw -o - "$record_file" 2>/dev/null || true)"
+  executable_path="$(/usr/bin/plutil -extract executablePath raw -o - "$record_file" 2>/dev/null || true)"
+  if [[ ! "$process_identifier" =~ ^[0-9]+$ ]]; then
+    read -r process_identifier <"$record_file" || true
+  fi
+
+  if [[ "$process_identifier" =~ ^[0-9]+$ ]] && ((process_identifier > 1)); then
+    local running_path
+    running_path="$(ps -ww -p "$process_identifier" -o comm= 2>/dev/null || true)"
+    if [[ -n "$executable_path" && "$running_path" == "$executable_path" ]] ||
+       [[ -z "$executable_path" && "$running_path" == */"$executable_name" ]]; then
+      kill "$process_identifier" >/dev/null 2>&1 || true
+      for _ in {1..20}; do
+        kill -0 "$process_identifier" >/dev/null 2>&1 || break
+        sleep 0.05
+      done
+      kill -KILL "$process_identifier" >/dev/null 2>&1 || true
+    fi
+  fi
+  rm -f "$record_file"
+}
+
+checksum() {
+  shasum -a 256 "$1" | awk '{print $1}'
+}
+
+verify_checksum() {
+  local file="$1"
+  local expected="$2"
+  local label="$3"
+  [[ "$(checksum "$file")" == "$expected" ]] || {
+    echo "$label checksum failed: $file" >&2
+    return 1
+  }
+}
+
+ensure_model() {
+  local file="$1"
+  local url="$2"
+  local expected="$3"
+  local label="$4"
+  if [[ -f "$file" ]]; then
+    verify_checksum "$file" "$expected" "$label"
+    return
+  fi
+
+  local download="$file.download"
+  curl -fL --retry 3 --retry-all-errors --continue-at - "$url" -o "$download"
+  verify_checksum "$download" "$expected" "Downloaded $label" || {
+    rm -f "$download"
+    return 1
+  }
+  mv "$download" "$file"
+}
+
+stop_recorded_process "$WHISPER_PID_FILE" "whisper-server"
+stop_recorded_process "$BABYLON_PID_FILE" "babylon"
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 
-if [[ ! -x "$WHISPER_BINARY" ]]; then
+if [[ ! -x "$WHISPER_BINARY" ]] ||
+   [[ "$(git -C "$WHISPER_SOURCE" describe --tags --exact-match HEAD 2>/dev/null || true)" != "$WHISPER_VERSION" ]]; then
   if [[ ! -d "$WHISPER_SOURCE/.git" ]]; then
+    if [[ -e "$WHISPER_SOURCE" ]]; then
+      echo "Whisper source exists but is not a Git checkout: $WHISPER_SOURCE" >&2
+      exit 1
+    fi
     git clone --branch "$WHISPER_VERSION" --depth 1 \
       https://github.com/ggml-org/whisper.cpp.git "$WHISPER_SOURCE"
+  else
+    if ! git -C "$WHISPER_SOURCE" cat-file -e "$WHISPER_VERSION^{commit}" 2>/dev/null; then
+      git -C "$WHISPER_SOURCE" fetch --depth 1 origin \
+        "refs/tags/$WHISPER_VERSION:refs/tags/$WHISPER_VERSION"
+    fi
+    git -C "$WHISPER_SOURCE" checkout --detach "$WHISPER_VERSION"
   fi
   CC=/usr/bin/clang CXX=/usr/bin/clang++ cmake \
     -S "$WHISPER_SOURCE" \
@@ -91,63 +203,31 @@ if [[ ! -x "$BABYLON_BINARY" ]] ||
 fi
 
 mkdir -p "$MODEL_DIR"
-if [[ -f "$MODEL_FILE" ]]; then
-  [[ "$(shasum -a 256 "$MODEL_FILE" | awk '{print $1}')" == "$MODEL_SHA256" ]] || {
-    echo "Model checksum failed: $MODEL_FILE" >&2
-    exit 1
-  }
-else
-  MODEL_DOWNLOAD="$MODEL_FILE.download"
-  curl -fL "$MODEL_URL" -o "$MODEL_DOWNLOAD"
-  [[ "$(shasum -a 256 "$MODEL_DOWNLOAD" | awk '{print $1}')" == "$MODEL_SHA256" ]] || {
-    echo "Downloaded model checksum failed" >&2
-    exit 1
-  }
-  mv "$MODEL_DOWNLOAD" "$MODEL_FILE"
+ensure_model "$MODEL_FILE" "$MODEL_URL" "$MODEL_SHA256" "Whisper model"
+ensure_model "$VAD_MODEL_FILE" "$VAD_MODEL_URL" "$VAD_MODEL_SHA256" "VAD model"
+ensure_model "$KOKORO_MODEL_FILE" "$KOKORO_MODEL_URL" "$KOKORO_MODEL_SHA256" "Kokoro model"
+
+verify_checksum \
+  "$BABYLON_SOURCE/models/open-phonemizer.onnx" \
+  "62d45a3e86e6cb111af7119a26625a2a35f979a19b7e8a7a8125ba9aaf00ad23" \
+  "Phonemizer model"
+verify_checksum \
+  "$BABYLON_SOURCE/data/dictionary.json" \
+  "b1c3470c62ffe625e3efcef938d1c22a5be2e1df7ee3489945e81a8eb4e9dd1e" \
+  "Babylon dictionary"
+
+BUILD_CONFIGURATION="debug"
+if [[ "$MODE" == "--dmg" || "$MODE" == "dmg" || "$MODE" == "--release" || "$MODE" == "release" ]]; then
+  BUILD_CONFIGURATION="release"
 fi
-
-if [[ -f "$VAD_MODEL_FILE" ]]; then
-  [[ "$(shasum -a 256 "$VAD_MODEL_FILE" | awk '{print $1}')" == "$VAD_MODEL_SHA256" ]] || {
-    echo "Model checksum failed: $VAD_MODEL_FILE" >&2
-    exit 1
-  }
-else
-  VAD_MODEL_DOWNLOAD="$VAD_MODEL_FILE.download"
-  curl -fL "$VAD_MODEL_URL" -o "$VAD_MODEL_DOWNLOAD"
-  [[ "$(shasum -a 256 "$VAD_MODEL_DOWNLOAD" | awk '{print $1}')" == "$VAD_MODEL_SHA256" ]] || {
-    echo "Downloaded VAD model checksum failed" >&2
-    exit 1
-  }
-  mv "$VAD_MODEL_DOWNLOAD" "$VAD_MODEL_FILE"
-fi
-
-if [[ -f "$KOKORO_MODEL_FILE" ]]; then
-  [[ "$(shasum -a 256 "$KOKORO_MODEL_FILE" | awk '{print $1}')" == "$KOKORO_MODEL_SHA256" ]] || {
-    echo "Model checksum failed: $KOKORO_MODEL_FILE" >&2
-    exit 1
-  }
-else
-  KOKORO_MODEL_DOWNLOAD="$KOKORO_MODEL_FILE.download"
-  curl -fL "$KOKORO_MODEL_URL" -o "$KOKORO_MODEL_DOWNLOAD"
-  [[ "$(shasum -a 256 "$KOKORO_MODEL_DOWNLOAD" | awk '{print $1}')" == "$KOKORO_MODEL_SHA256" ]] || {
-    echo "Downloaded Kokoro model checksum failed" >&2
-    exit 1
-  }
-  mv "$KOKORO_MODEL_DOWNLOAD" "$KOKORO_MODEL_FILE"
-fi
-
-[[ "$(shasum -a 256 "$BABYLON_SOURCE/models/open-phonemizer.onnx" | awk '{print $1}')" == \
-  "62d45a3e86e6cb111af7119a26625a2a35f979a19b7e8a7a8125ba9aaf00ad23" ]]
-[[ "$(shasum -a 256 "$BABYLON_SOURCE/data/dictionary.json" | awk '{print $1}')" == \
-  "b1c3470c62ffe625e3efcef938d1c22a5be2e1df7ee3489945e81a8eb4e9dd1e" ]]
-
-swift build --package-path "$ROOT_DIR" --product "$APP_NAME"
-BUILD_BINARY="$(swift build --package-path "$ROOT_DIR" --show-bin-path)/$APP_NAME"
+swift build --package-path "$ROOT_DIR" --configuration "$BUILD_CONFIGURATION" --product "$APP_NAME"
+BUILD_BINARY="$(swift build --package-path "$ROOT_DIR" --configuration "$BUILD_CONFIGURATION" --show-bin-path)/$APP_NAME"
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_RESOURCES"
 cp "$BUILD_BINARY" "$APP_BINARY"
 cp "$WHISPER_BINARY" "$APP_RESOURCES/whisper-server"
+cp "$WHISPER_SOURCE/LICENSE" "$APP_RESOURCES/Whisper-LICENSE"
 cp "$APP_ICON" "$APP_RESOURCES/tk.icns"
 KOKORO_RESOURCES="$APP_RESOURCES/kokoro"
 mkdir -p \
@@ -165,6 +245,11 @@ chmod +x "$APP_BINARY"
 chmod +x "$APP_RESOURCES/whisper-server"
 chmod +x "$KOKORO_RESOURCES/babylon"
 
+if [[ "$MODE" == "--dmg" || "$MODE" == "dmg" || "$MODE" == "--release" || "$MODE" == "release" ]]; then
+  mkdir -p "$APP_RESOURCES/models"
+  cp "$MODEL_FILE" "$VAD_MODEL_FILE" "$KOKORO_MODEL_FILE" "$APP_RESOURCES/models/"
+fi
+
 cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -176,6 +261,10 @@ cat >"$INFO_PLIST" <<PLIST
   <string>$BUNDLE_ID</string>
   <key>CFBundleName</key>
   <string>$APP_NAME</string>
+  <key>CFBundleShortVersionString</key>
+  <string>$VERSION</string>
+  <key>CFBundleVersion</key>
+  <string>$BUILD_NUMBER</string>
   <key>CFBundleIconFile</key>
   <string>tk.icns</string>
   <key>CFBundlePackageType</key>
@@ -190,13 +279,59 @@ cat >"$INFO_PLIST" <<PLIST
 </plist>
 PLIST
 
-/usr/bin/codesign --force --deep --sign - "$APP_BUNDLE"
+sign_distribution() {
+  local identity="$1"
+  while IFS= read -r library; do
+    /usr/bin/codesign --force --sign "$identity" --timestamp --options runtime "$library"
+  done < <(find "$KOKORO_RESOURCES/lib" -type f -name '*.dylib' -print)
+  /usr/bin/codesign --force --sign "$identity" --timestamp --options runtime "$KOKORO_RESOURCES/babylon"
+  /usr/bin/codesign --force --sign "$identity" --timestamp --options runtime "$APP_RESOURCES/whisper-server"
+  /usr/bin/codesign \
+    --force \
+    --sign "$identity" \
+    --timestamp \
+    --options runtime \
+    --entitlements "$ENTITLEMENTS" \
+    "$APP_BUNDLE"
+}
+
+create_dmg() {
+  local staging
+  staging="$(mktemp -d)"
+  /usr/bin/ditto "$APP_BUNDLE" "$staging/$APP_NAME.app"
+  ln -s /Applications "$staging/Applications"
+  rm -f "$DMG_PATH"
+  if ! /usr/bin/hdiutil create \
+    -volname "$APP_NAME" \
+    -srcfolder "$staging" \
+    -ov \
+    -format UDZO \
+    "$DMG_PATH"; then
+    rm -rf "$staging"
+    return 1
+  fi
+  rm -rf "$staging"
+}
+
+if [[ "$MODE" == "--release" || "$MODE" == "release" ]]; then
+  sign_distribution "$SIGNING_IDENTITY"
+else
+  /usr/bin/codesign --force --deep --sign - --options runtime --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
+fi
+/usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+
+if [[ "$MODE" == "--dmg" || "$MODE" == "dmg" || "$MODE" == "--release" || "$MODE" == "release" ]]; then
+  create_dmg
+fi
 
 open_app() {
   /usr/bin/open -n "$APP_BUNDLE"
 }
 
 case "$MODE" in
+  --build|build)
+    echo "Built $APP_BUNDLE"
+    ;;
   run)
     open_app
     ;;
@@ -278,8 +413,20 @@ case "$MODE" in
     [[ -s "$VERIFY_DIR/speech.wav" ]]
     /usr/bin/afinfo "$VERIFY_DIR/speech.wav" | grep -q "24000 Hz"
     ;;
+  --dmg|dmg)
+    echo "Created $DMG_PATH"
+    ;;
+  --release|release)
+    /usr/bin/codesign --force --sign "$SIGNING_IDENTITY" --timestamp "$DMG_PATH"
+    xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
+    xcrun stapler staple "$DMG_PATH"
+    xcrun stapler validate "$DMG_PATH"
+    /usr/sbin/spctl --assess --type execute --verbose=2 "$APP_BUNDLE"
+    /usr/sbin/spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG_PATH"
+    echo "Created signed and notarized $DMG_PATH"
+    ;;
   *)
-    echo "usage: $0 [run|--install|--debug|--logs|--telemetry|--verify]" >&2
+    usage >&2
     exit 2
     ;;
 esac
