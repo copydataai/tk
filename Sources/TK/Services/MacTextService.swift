@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import AVFoundation
 import Carbon.HIToolbox
+import Darwin
 
 enum MacTextError: LocalizedError {
     case accessibilityRequired
@@ -31,7 +32,7 @@ final class MacTextService: NSObject {
     static let defaultVoice = "en-US-heart"
 
     var hasAccessibilityPermission: Bool { AXIsProcessTrusted() }
-    static var availableVoices: [String] {
+    static let availableVoices: [String] = {
         guard let directory = Bundle.main.resourceURL?
             .appendingPathComponent("kokoro/voices", isDirectory: true),
               let files = try? FileManager.default.contentsOfDirectory(
@@ -44,6 +45,13 @@ final class MacTextService: NSObject {
             .filter { $0.pathExtension == "bin" }
             .map { $0.deletingPathExtension().lastPathComponent }
             .sorted()
+    }()
+
+    nonisolated private static var babylonPIDURL: URL {
+        FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0].appendingPathComponent("tk/babylon-server.pid")
     }
 
     private var babylonProcess: Process?
@@ -69,9 +77,10 @@ final class MacTextService: NSObject {
     deinit {
         NotificationCenter.default.removeObserver(self)
         speechRequest?.cancel()
-        if babylonProcess?.isRunning == true {
-            babylonProcess?.terminate()
+        if let babylonProcess, babylonProcess.isRunning {
+            kill(babylonProcess.processIdentifier, SIGKILL)
         }
+        try? FileManager.default.removeItem(at: Self.babylonPIDURL)
         for speechURL in speechURLs {
             try? FileManager.default.removeItem(at: speechURL)
         }
@@ -247,6 +256,7 @@ final class MacTextService: NSObject {
 
     func stopSpeaking() {
         speechID = nil
+        speechRequest?.cancel()
         speechRequest = nil
         audioPlayer?.pause()
         audioPlayer?.removeAllItems()
@@ -259,10 +269,11 @@ final class MacTextService: NSObject {
 
     @objc private func applicationWillTerminate(_ notification: Notification) {
         stopSpeaking()
-        if babylonProcess?.isRunning == true {
-            babylonProcess?.terminate()
+        if let babylonProcess, babylonProcess.isRunning {
+            kill(babylonProcess.processIdentifier, SIGKILL)
         }
         babylonProcess = nil
+        try? FileManager.default.removeItem(at: Self.babylonPIDURL)
     }
 
     private func babylonServerURL(
@@ -276,16 +287,28 @@ final class MacTextService: NSObject {
 
         babylonProcess = nil
         babylonPort = nil
+        let executableURL = resources.appendingPathComponent("kokoro/babylon")
+        let bundledModel = resources.appendingPathComponent(
+            "models/kokoro-v1.0-fp32.onnx"
+        )
+        let modelURL = FileManager.default.fileExists(atPath: bundledModel.path)
+            ? bundledModel
+            : modelDirectory.appendingPathComponent("kokoro-v1.0-fp32.onnx")
+        ResidentProcessRecord.read(
+            from: Self.babylonPIDURL,
+            legacyExecutableURL: executableURL
+        )?.terminateIfOrphaned()
+        try? FileManager.default.removeItem(at: Self.babylonPIDURL)
         var lastError: Error = MacTextError.speechFailed("Kokoro did not become ready")
         for _ in 0..<3 {
             let port = Int.random(in: 49_152...65_535)
             let process = Process()
-            process.executableURL = resources.appendingPathComponent("kokoro/babylon")
+            process.executableURL = executableURL
             process.currentDirectoryURL = FileManager.default.temporaryDirectory
             process.arguments = [
                 "--phonemizer-model", resources.appendingPathComponent("kokoro/models/open-phonemizer.onnx").path,
                 "--dictionary", resources.appendingPathComponent("kokoro/data/dictionary.json").path,
-                "--kokoro-model", modelDirectory.appendingPathComponent("kokoro-v1.0-fp32.onnx").path,
+                "--kokoro-model", modelURL.path,
                 "--kokoro-voices", resources.appendingPathComponent("kokoro/voices").path,
                 "serve",
                 "--host", "127.0.0.1",
@@ -295,7 +318,14 @@ final class MacTextService: NSObject {
             process.standardError = FileHandle.nullDevice
             do {
                 try process.run()
+                try ResidentProcessRecord(
+                    processIdentifier: process.processIdentifier,
+                    executableURL: executableURL
+                ).write(to: Self.babylonPIDURL)
             } catch {
+                if process.isRunning {
+                    kill(process.processIdentifier, SIGKILL)
+                }
                 lastError = error
                 continue
             }
@@ -324,8 +354,9 @@ final class MacTextService: NSObject {
                 }
             }
             if process.isRunning {
-                process.terminate()
+                kill(process.processIdentifier, SIGKILL)
             }
+            try? FileManager.default.removeItem(at: Self.babylonPIDURL)
             babylonProcess = nil
             babylonPort = nil
         }

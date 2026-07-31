@@ -62,8 +62,8 @@ actor WhisperRuntime {
     }
 
     deinit {
-        if process?.isRunning == true {
-            process?.terminate()
+        if let process, process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
         }
         if let terminationObserver {
             NotificationCenter.default.removeObserver(terminationObserver)
@@ -89,24 +89,32 @@ actor WhisperRuntime {
                 stopServer()
             }
         }
-        let stalePID = Self.storedServerPID
-        stopServer()
-
         let resources = Bundle.main.resourceURL
         let executableURL = resources?.appendingPathComponent("whisper-server")
         let modelDirectory = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         )[0].appendingPathComponent("tk/models", isDirectory: true)
-        let modelURL = modelDirectory.appendingPathComponent("ggml-large-v3-turbo-q5_0.bin")
-        let vadModelURL = modelDirectory.appendingPathComponent("ggml-silero-v6.2.0.bin")
+        let modelURL = Self.modelURL(
+            named: "ggml-large-v3-turbo-q5_0.bin",
+            resources: resources,
+            fallbackDirectory: modelDirectory
+        )
+        let vadModelURL = Self.modelURL(
+            named: "ggml-silero-v6.2.0.bin",
+            resources: resources,
+            fallbackDirectory: modelDirectory
+        )
         guard let executableURL,
               FileManager.default.isExecutableFile(atPath: executableURL.path) else {
             throw WhisperRuntimeError.runtimeMissing
         }
-        if let stalePID {
-            Self.terminateStaleServer(stalePID, executableURL: executableURL)
-        }
+        let staleServer = ResidentProcessRecord.read(
+            from: Self.pidURL,
+            legacyExecutableURL: executableURL
+        )
+        stopServer()
+        staleServer?.terminateIfOrphaned()
         guard FileManager.default.fileExists(atPath: modelURL.path),
               FileManager.default.fileExists(atPath: vadModelURL.path) else {
             throw WhisperRuntimeError.modelsMissing
@@ -129,13 +137,17 @@ actor WhisperRuntime {
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
             try process.run()
+            do {
+                try ResidentProcessRecord(
+                    processIdentifier: process.processIdentifier,
+                    executableURL: executableURL
+                ).write(to: Self.pidURL)
+            } catch {
+                kill(process.processIdentifier, SIGKILL)
+                throw WhisperRuntimeError.startupFailed
+            }
             self.process = process
             registerTerminationCleanup(for: process)
-            try? String(process.processIdentifier).write(
-                to: Self.pidURL,
-                atomically: true,
-                encoding: .utf8
-            )
 
             if try await waitUntilReady(process: process, serverURL: url) {
                 serverURL = url
@@ -171,16 +183,16 @@ actor WhisperRuntime {
             object: nil,
             queue: nil
         ) { [weak process] _ in
-            if process?.isRunning == true {
-                process?.terminate()
+            if let process, process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
             }
             try? FileManager.default.removeItem(at: Self.pidURL)
         }
     }
 
     private func stopServer() {
-        if process?.isRunning == true {
-            process?.terminate()
+        if let process, process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
         }
         process = nil
         serverURL = nil
@@ -219,35 +231,18 @@ actor WhisperRuntime {
         )[0].appendingPathComponent("tk/whisper-server.pid")
     }
 
-    private nonisolated static var storedServerPID: pid_t? {
-        guard let value = try? String(contentsOf: pidURL, encoding: .utf8),
-              let pid = pid_t(value.trimmingCharacters(in: .whitespacesAndNewlines)),
-              pid > 1 else {
-            return nil
+    private nonisolated static func modelURL(
+        named name: String,
+        resources: URL?,
+        fallbackDirectory: URL
+    ) -> URL {
+        if let bundled = resources?.appendingPathComponent("models/\(name)"),
+           FileManager.default.fileExists(atPath: bundled.path) {
+            return bundled
         }
-        return pid
+        return fallbackDirectory.appendingPathComponent(name)
     }
 
-    private nonisolated static func terminateStaleServer(
-        _ pid: pid_t,
-        executableURL: URL
-    ) {
-        var info = proc_bsdinfo()
-        let infoSize = MemoryLayout<proc_bsdinfo>.stride
-        let bsdInfoFlavor = Int32(3) // PROC_PIDTBSDINFO is unavailable to Swift.
-        let bytesRead = withUnsafeMutablePointer(to: &info) {
-            proc_pidinfo(pid, bsdInfoFlavor, 0, $0, Int32(infoSize))
-        }
-        guard bytesRead == infoSize, info.pbi_ppid == 1 else { return }
-
-        var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
-        guard proc_pidpath(pid, &path, UInt32(path.count)) > 0,
-              URL(fileURLWithPath: String(cString: path)).standardizedFileURL
-                == executableURL.standardizedFileURL else {
-            return
-        }
-        kill(pid, SIGTERM)
-    }
 }
 
 private struct HealthResponse: Decodable {
