@@ -38,6 +38,10 @@ struct TKApp: App {
         }
         .windowResizability(.contentSize)
 
+        Settings {
+            SettingsView(model: model)
+        }
+
         MenuBarExtra {
             MenuBarView(model: model)
         } label: {

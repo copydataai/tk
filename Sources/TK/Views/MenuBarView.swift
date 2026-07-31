@@ -33,6 +33,7 @@ struct MenuBarView: View {
                 revealMainWindow()
             }
         }
+        SettingsLink()
         Button("Quit") {
             NSApplication.shared.terminate(nil)
         }

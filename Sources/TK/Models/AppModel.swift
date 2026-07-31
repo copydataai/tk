@@ -1,3 +1,5 @@
+import AppKit
+import AVFoundation
 import Foundation
 import Observation
 
@@ -13,6 +15,7 @@ final class AppModel {
 
     var statusMessage = "Ready"
     var accessibilityGranted = false
+    var microphoneGranted = false
     var transcripts: [TranscriptRecord] = []
 
     var voiceIdentifier: String {
@@ -163,8 +166,30 @@ final class AppModel {
             : "Enable tk in System Settings → Privacy & Security → Accessibility"
     }
 
+    func requestMicrophone() {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            microphoneGranted = true
+            statusMessage = "Microphone access is enabled"
+        case .notDetermined:
+            Task {
+                microphoneGranted = await AVCaptureDevice.requestAccess(for: .audio)
+                statusMessage = microphoneGranted
+                    ? "Microphone access is enabled"
+                    : "Microphone access is required for dictation"
+            }
+        default:
+            guard let url = URL(
+                string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+            ) else { return }
+            NSWorkspace.shared.open(url)
+            statusMessage = "Enable tk under Privacy & Security → Microphone"
+        }
+    }
+
     func refreshPermissions() {
         accessibilityGranted = macText.hasAccessibilityPermission
+        microphoneGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     }
 
     private func configureHotKeys() {
