@@ -15,13 +15,22 @@
 
 - macOS 14 or newer
 - Apple silicon with at least 16 GB of memory; 24 GB is recommended
-- Xcode command-line tools, CMake, Git, and curl
 - About 1.1 GB of disk space for the app and cached speech models
 - Microphone and Accessibility permissions
 
 `tk` never falls back to cloud recognition. The multilingual model detects the spoken language automatically.
 
-## Install
+## Install a release
+
+1. Open the downloaded `tk-<version>.dmg`.
+2. Drag **tk** to **Applications**.
+3. Open **tk** and follow the two permission prompts.
+
+Release builds include the speech models and work offline. No Terminal, package manager, account, or model download is required.
+
+## Build from source
+
+Building requires Xcode command-line tools, CMake, Git, and curl.
 
 From this checkout:
 
@@ -30,6 +39,14 @@ From this checkout:
 ```
 
 This builds the app, downloads and verifies its local speech models, installs it at `~/Applications/tk.app`, and opens it. Run the same command again to update the installation.
+
+To create the same self-contained drag-to-install disk image locally:
+
+```sh
+./script/build_and_run.sh --dmg
+```
+
+The result is written to `dist/tk-0.1.0.dmg`.
 
 ## Run locally
 
@@ -42,7 +59,14 @@ On first use, the script builds pinned Whisper and Babylon ONNX runtimes, downlo
 To build without launching:
 
 ```sh
-swift build
+./script/build_and_run.sh --build
+```
+
+To run the automated checks:
+
+```sh
+swift test
+bash -n script/build_and_run.sh
 ```
 
 To build, launch, and confirm that the process started:
@@ -53,9 +77,9 @@ To build, launch, and confirm that the process started:
 
 ## First use
 
-1. Open `tk` and click **Enable…**.
-2. Allow `tk` under **System Settings → Privacy & Security → Accessibility**.
-3. Press the dictation shortcut once and approve Microphone access. `tk` automatically uses the last working microphone and falls back to another connected input when needed.
+1. Open `tk` and click **Enable…** beside Accessibility and Microphone.
+2. Approve both permissions in macOS System Settings.
+3. Return to `tk` and click **Get Started**. `tk` automatically uses the last working microphone and falls back to another connected input when needed.
 4. Place the cursor in another app, press the shortcut, speak, then press it again to insert.
 5. Open **Read aloud** to preview a voice, or select text in another app and press the read shortcut.
 
@@ -69,3 +93,15 @@ Default shortcuts:
 ## Current scope
 
 Dictation is processed after recording stops, rather than streamed while speaking. Reading and insertion work in apps that expose text through macOS Accessibility; `tk` falls back to copy/paste events for other standard text controls while restoring the clipboard afterward.
+
+## Publish a release
+
+Store notarization credentials once with `xcrun notarytool store-credentials`, then run:
+
+```sh
+TK_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+TK_NOTARY_PROFILE="tk-notary" \
+./script/build_and_run.sh --release
+```
+
+The command signs the bundled executables with the hardened runtime, creates the DMG, submits it to Apple for notarization, staples the ticket, and verifies Gatekeeper acceptance. It fails before building if the Developer ID identity or keychain profile is missing.
