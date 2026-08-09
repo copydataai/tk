@@ -8,10 +8,15 @@ actor WhisperRuntime {
 
     private var process: Process?
     private var serverURL: URL?
+    private var activeProfileID: String?
     private var terminationObserver: NSObjectProtocol?
     private var isStarting = false
 
-    func transcribe(wavURL: URL, language: String = "auto") async throws -> String {
+    func transcribe(
+        wavURL: URL,
+        language: String = "auto",
+        artifact: SpeechArtifact
+    ) async throws -> String {
         let wavURL = try Self.validatedWAV(wavURL)
         guard !language.isEmpty,
               language.count <= 16,
@@ -19,7 +24,7 @@ actor WhisperRuntime {
             throw WhisperRuntimeError.invalidLanguage
         }
 
-        let serverURL = try await readyServerURL()
+        let serverURL = try await readyServerURL(artifact: artifact)
         let boundary = "tk-\(UUID().uuidString)"
         var body = Data()
         body.append("--\(boundary)\r\n")
@@ -71,13 +76,15 @@ actor WhisperRuntime {
         try? FileManager.default.removeItem(at: Self.pidURL)
     }
 
-    private func readyServerURL() async throws -> URL {
-        if process?.isRunning == true, let serverURL {
+    private func readyServerURL(artifact: SpeechArtifact) async throws -> URL {
+        if process?.isRunning == true, activeProfileID == artifact.profileID, let serverURL {
             return serverURL
         }
         while isStarting {
             try await Task.sleep(for: .milliseconds(50))
-            if process?.isRunning == true, let serverURL {
+            if process?.isRunning == true,
+               activeProfileID == artifact.profileID,
+               let serverURL {
                 return serverURL
             }
         }
@@ -91,15 +98,11 @@ actor WhisperRuntime {
         }
         let resources = Bundle.main.resourceURL
         let executableURL = resources?.appendingPathComponent("whisper-server")
+        let modelURL = artifact.url
         let modelDirectory = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         )[0].appendingPathComponent("tk/models", isDirectory: true)
-        let modelURL = Self.modelURL(
-            named: "ggml-large-v3-turbo-q5_0.bin",
-            resources: resources,
-            fallbackDirectory: modelDirectory
-        )
         let vadModelURL = Self.modelURL(
             named: "ggml-silero-v6.2.0.bin",
             resources: resources,
@@ -151,6 +154,7 @@ actor WhisperRuntime {
 
             if try await waitUntilReady(process: process, serverURL: url) {
                 serverURL = url
+                activeProfileID = artifact.profileID
                 return url
             }
             stopServer()
@@ -196,6 +200,7 @@ actor WhisperRuntime {
         }
         process = nil
         serverURL = nil
+        activeProfileID = nil
         if let terminationObserver {
             NotificationCenter.default.removeObserver(terminationObserver)
             self.terminationObserver = nil

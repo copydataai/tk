@@ -56,6 +56,7 @@ final class MacTextService: NSObject {
 
     private var babylonProcess: Process?
     private var babylonPort: Int?
+    private var activeProfileID: String?
     private var speechRequest: Task<(Data, URLResponse), Error>?
     private var speechID: UUID?
     private var audioPlayer: AVQueuePlayer?
@@ -168,7 +169,8 @@ final class MacTextService: NSObject {
         _ text: String,
         voiceIdentifier: String,
         rate: Float,
-        volume: Float
+        volume: Float,
+        artifact: SpeechArtifact
     ) async throws {
         stopSpeaking()
         let speechID = UUID()
@@ -178,16 +180,11 @@ final class MacTextService: NSObject {
             self.speechID = nil
             throw MacTextError.speechFailed("Kokoro runtime is missing; rebuild tk")
         }
-        let modelDirectory = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        )[0].appendingPathComponent("tk/models", isDirectory: true)
-
         let serverURL: URL
         do {
             serverURL = try await babylonServerURL(
                 resources: resources,
-                modelDirectory: modelDirectory,
+                artifact: artifact,
                 speechID: speechID
             )
         } catch {
@@ -278,22 +275,27 @@ final class MacTextService: NSObject {
 
     private func babylonServerURL(
         resources: URL,
-        modelDirectory: URL,
+        artifact: SpeechArtifact,
         speechID: UUID
     ) async throws -> URL {
-        if let babylonProcess, babylonProcess.isRunning, let babylonPort {
+        if let babylonProcess,
+           babylonProcess.isRunning,
+           activeProfileID == artifact.profileID,
+           let babylonPort {
             return URL(string: "http://127.0.0.1:\(babylonPort)")!
         }
 
-        babylonProcess = nil
-        babylonPort = nil
+        if babylonProcess != nil {
+            stopBabylon()
+        } else {
+            babylonPort = nil
+            activeProfileID = nil
+        }
         let executableURL = resources.appendingPathComponent("kokoro/babylon")
-        let bundledModel = resources.appendingPathComponent(
-            "models/kokoro-v1.0-fp32.onnx"
-        )
-        let modelURL = FileManager.default.fileExists(atPath: bundledModel.path)
-            ? bundledModel
-            : modelDirectory.appendingPathComponent("kokoro-v1.0-fp32.onnx")
+        let modelURL = artifact.url
+        guard FileManager.default.fileExists(atPath: modelURL.path) else {
+            throw MacTextError.speechFailed("The selected reading profile is unavailable")
+        }
         ResidentProcessRecord.read(
             from: Self.babylonPIDURL,
             legacyExecutableURL: executableURL
@@ -346,6 +348,7 @@ final class MacTextService: NSObject {
                     guard response.statusCode == 200 else {
                         throw MacTextError.speechFailed("Kokoro readiness check failed")
                     }
+                    activeProfileID = artifact.profileID
                     return serverURL
                 } catch {
                     guard self.speechID == speechID else { throw CancellationError() }
@@ -359,8 +362,19 @@ final class MacTextService: NSObject {
             try? FileManager.default.removeItem(at: Self.babylonPIDURL)
             babylonProcess = nil
             babylonPort = nil
+            activeProfileID = nil
         }
         throw lastError
+    }
+
+    private func stopBabylon() {
+        if let babylonProcess, babylonProcess.isRunning {
+            kill(babylonProcess.processIdentifier, SIGKILL)
+        }
+        babylonProcess = nil
+        babylonPort = nil
+        activeProfileID = nil
+        try? FileManager.default.removeItem(at: Self.babylonPIDURL)
     }
 
     private func send(
