@@ -9,8 +9,10 @@ final class DictationService {
     private(set) var isTranscribing = false
     private(set) var transcript = ""
     private(set) var status = "Press the shortcut to dictate"
+    private(set) var activeProfileID: String?
 
     var onTranscriptReady: ((String) -> Void)?
+    var resolveArtifact: ((String) throws -> SpeechArtifact)?
 
     @ObservationIgnored private var captureSession: AVCaptureSession?
     @ObservationIgnored private var captureOutput: AVCaptureAudioFileOutput?
@@ -20,7 +22,7 @@ final class DictationService {
     @ObservationIgnored private var isFinalizing = false
     @ObservationIgnored private var shouldTranscribe = false
 
-    func toggle(language: String? = nil) {
+    func toggle(language: String? = nil, artifact: SpeechArtifact? = nil) {
         guard !isTranscribing else {
             status = "Transcription is still running"
             return
@@ -32,8 +34,17 @@ final class DictationService {
         if isRecording {
             finish()
         } else {
-            requestMicrophonePermission(language: language)
+            guard let artifact else {
+                status = "Choose an available dictation profile in Settings"
+                return
+            }
+            activeProfileID = artifact.profileID
+            requestMicrophonePermission(language: language, artifact: artifact)
         }
+    }
+
+    func showUnavailable(_ message: String) {
+        status = message
     }
 
     func cancel() {
@@ -43,27 +54,29 @@ final class DictationService {
         status = "Dictation cancelled"
     }
 
-    private func requestMicrophonePermission(language: String?) {
+    private func requestMicrophonePermission(language: String?, artifact: SpeechArtifact) {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
-            startRecording(language: language)
+            startRecording(language: language, profileID: artifact.profileID)
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
                 Task { @MainActor in
                     guard let self else { return }
                     if granted {
-                        self.startRecording(language: language)
+                        self.startRecording(language: language, profileID: artifact.profileID)
                     } else {
+                        self.activeProfileID = nil
                         self.status = "Microphone permission is required"
                     }
                 }
             }
         default:
+            activeProfileID = nil
             status = "Microphone permission is required"
         }
     }
 
-    private func startRecording(language: String?) {
+    private func startRecording(language: String?, profileID: String) {
         isPreparing = true
         status = "Choosing a working microphone…"
 
@@ -85,6 +98,7 @@ final class DictationService {
                 captureOutput = setup.output
                 recordingDelegate = delegate
                 recordingLanguage = language
+                activeProfileID = profileID
                 UserDefaults.standard.set(setup.deviceID, forKey: "workingMicrophoneID")
                 transcript = ""
                 shouldTranscribe = false
@@ -96,6 +110,7 @@ final class DictationService {
                 )
                 status = "Listening on \(setup.deviceName) — press the shortcut again to insert"
             } catch {
+                activeProfileID = nil
                 status = "Could not start the microphone: \(error.localizedDescription)"
             }
             isPreparing = false
@@ -119,6 +134,7 @@ final class DictationService {
     private func recordingDidFinish(at recordingURL: URL, error: Error?) {
         let shouldTranscribe = shouldTranscribe
         let language = recordingLanguage
+        let profileID = activeProfileID
         let session = captureSession
         captureSession = nil
         captureOutput = nil
@@ -130,11 +146,13 @@ final class DictationService {
 
         guard shouldTranscribe else {
             try? FileManager.default.removeItem(at: recordingURL)
+            activeProfileID = nil
             return
         }
         guard Self.recordingSucceeded(error) else {
             try? FileManager.default.removeItem(at: recordingURL)
             isTranscribing = false
+            activeProfileID = nil
             status = "Could not record audio: \(error!.localizedDescription)"
             return
         }
@@ -149,14 +167,22 @@ final class DictationService {
                 try? FileManager.default.removeItem(at: recordingURL)
                 try? FileManager.default.removeItem(at: wavURL)
                 isTranscribing = false
+                activeProfileID = nil
             }
             do {
+                guard let profileID, let resolveArtifact else {
+                    throw SpeechProfileError.unavailable(
+                        "The selected dictation profile is unavailable. Choose another profile in Settings."
+                    )
+                }
+                let artifact = try resolveArtifact(profileID)
                 try await Task.detached {
                     try Self.convertToWhisperWAV(recordingURL, outputURL: wavURL)
                 }.value
                 let text = try await WhisperRuntime.shared.transcribe(
                     wavURL: wavURL,
-                    language: language ?? "auto"
+                    language: language ?? "auto",
+                    artifact: artifact
                 )
                 transcript = text
                 if text.isEmpty {

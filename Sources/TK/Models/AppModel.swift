@@ -7,6 +7,7 @@ import Observation
 @Observable
 final class AppModel {
     let dictation = DictationService()
+    let profiles = SpeechProfileStore()
 
     private let hotKeys = GlobalHotKeyService()
     private let macText = MacTextService()
@@ -17,6 +18,9 @@ final class AppModel {
     var accessibilityGranted = false
     var microphoneGranted = false
     var transcripts: [TranscriptRecord] = []
+    private(set) var isReading = false
+    private(set) var readingProfileID: String?
+    private var readingOperationID: UUID?
 
     var voiceIdentifier: String {
         didSet { UserDefaults.standard.set(voiceIdentifier, forKey: "kokoroVoiceIdentifier") }
@@ -52,9 +56,7 @@ final class AppModel {
 
     init() {
         let savedVoice = UserDefaults.standard.string(forKey: "kokoroVoiceIdentifier") ?? ""
-        voiceIdentifier = MacTextService.availableVoices.contains(savedVoice)
-            ? savedVoice
-            : MacTextService.defaultVoice
+        voiceIdentifier = savedVoice.isEmpty ? MacTextService.defaultVoice : savedVoice
         speechRate = min(max(Self.savedDouble(
             key: "kokoroSpeechRate",
             fallback: 1
@@ -86,6 +88,10 @@ final class AppModel {
                 await self?.saveAndInsert(text)
             }
         }
+        dictation.resolveArtifact = { [weak self] profileID in
+            guard let self else { throw CancellationError() }
+            return try self.profiles.artifact(forID: profileID)
+        }
         hotKeys.onDictation = { [weak self] in self?.toggleDictation() }
         hotKeys.onReadSelection = { [weak self] in self?.readSelection() }
         hotKeys.start()
@@ -101,10 +107,18 @@ final class AppModel {
             requestAccessibility()
             return
         }
-        if !dictation.isRecording && !dictation.isTranscribing {
-            macText.rememberInsertionTarget()
+        if dictation.isRecording || dictation.isTranscribing {
+            dictation.toggle(language: transcriptionLanguageCode)
+            return
         }
-        dictation.toggle(language: transcriptionLanguageCode)
+        do {
+            let artifact = try profiles.artifact(for: .dictation)
+            macText.rememberInsertionTarget()
+            dictation.toggle(language: transcriptionLanguageCode, artifact: artifact)
+        } catch {
+            dictation.showUnavailable(error.localizedDescription)
+            statusMessage = error.localizedDescription
+        }
     }
 
     func cancelDictation() {
@@ -119,13 +133,27 @@ final class AppModel {
 
         Task {
             do {
+                let artifact = try profiles.artifact(for: .reading)
+                try validateVoice(voiceIdentifier)
+                let operationID = UUID()
+                isReading = true
+                readingProfileID = artifact.profileID
+                readingOperationID = operationID
+                defer {
+                    if readingOperationID == operationID {
+                        isReading = false
+                        readingProfileID = nil
+                        readingOperationID = nil
+                    }
+                }
                 let text = try await macText.selectedText()
                 statusMessage = "Generating speech"
                 try await macText.speak(
                     text,
                     voiceIdentifier: voiceIdentifier,
                     rate: Float(speechRate),
-                    volume: Float(speechVolume)
+                    volume: Float(speechVolume),
+                    artifact: artifact
                 )
                 statusMessage = "Reading selection"
             } catch is CancellationError {
@@ -138,12 +166,26 @@ final class AppModel {
     func previewVoice(_ identifier: String) {
         Task {
             do {
+                let artifact = try profiles.artifact(for: .reading)
+                try validateVoice(identifier)
                 statusMessage = "Generating voice preview"
+                let operationID = UUID()
+                isReading = true
+                readingProfileID = artifact.profileID
+                readingOperationID = operationID
+                defer {
+                    if readingOperationID == operationID {
+                        isReading = false
+                        readingProfileID = nil
+                        readingOperationID = nil
+                    }
+                }
                 try await macText.speak(
                     Self.previewText(for: identifier),
                     voiceIdentifier: identifier,
                     rate: Float(speechRate),
-                    volume: Float(speechVolume)
+                    volume: Float(speechVolume),
+                    artifact: artifact
                 )
                 statusMessage = "Playing voice preview"
             } catch is CancellationError {
@@ -192,11 +234,25 @@ final class AppModel {
         microphoneGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     }
 
+    func profileInUse(_ profile: SpeechProfile) -> Bool {
+        return profile.kind == .dictation
+            ? dictation.activeProfileID == profile.id
+            : readingProfileID == profile.id
+    }
+
     private func configureHotKeys() {
         statusMessage = hotKeys.configure(
             dictation: dictationShortcut,
             reading: readShortcut
         ) ? "Shortcuts ready" : "A shortcut is already used by another app"
+    }
+
+    private func validateVoice(_ identifier: String) throws {
+        guard availableVoices.contains(identifier) else {
+            throw MacTextError.speechFailed(
+                "The saved voice is unavailable. Choose another voice in Read Aloud."
+            )
+        }
     }
 
     private func saveAndInsert(_ text: String) async {

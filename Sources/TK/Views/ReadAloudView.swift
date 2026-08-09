@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 struct ReadAloudView: View {
     @Bindable var model: AppModel
 
@@ -45,6 +46,7 @@ struct ReadAloudView: View {
     }
 }
 
+@MainActor
 private struct VoicePicker: View {
     @Bindable var model: AppModel
     @State private var localeIdentifier: String

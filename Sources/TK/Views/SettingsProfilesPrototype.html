@@ -1,0 +1,170 @@
+<!doctype html>
+<!-- PROTOTYPE — throw away after review. Three Settings variants, switchable via ?variant=A|B|C. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>tk Speech profiles prototype</title>
+  <style>
+    :root { color-scheme: light dark; font: 13px -apple-system, BlinkMacSystemFont, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #ececec; color: #1d1d1f; }
+    button, select { font: inherit; }
+    button { min-height: 28px; padding: 3px 12px; border: 1px solid #aaa; border-radius: 7px; background: #fff; color: inherit; }
+    button.primary { color: white; border-color: #0577e6; background: #087ff5; }
+    button:disabled { opacity: .45; }
+    button:focus-visible, select:focus-visible, summary:focus-visible { outline: 3px solid #68aaff; outline-offset: 2px; }
+    .window { width: 500px; min-height: 440px; margin: 28px auto 100px; padding: 20px; border: 1px solid #bbb; border-radius: 12px; background: #f6f6f6; box-shadow: 0 18px 50px #0002; }
+    h1 { margin: 0 0 18px; font-size: 20px; }
+    h2 { margin: 0; font-size: 13px; }
+    h3 { margin: 0 0 4px; font-size: 13px; }
+    p { margin: 4px 0; }
+    .muted { color: #686868; }
+    .small { font-size: 11px; }
+    .group { margin: 0 0 16px; padding: 14px; border: 1px solid #d1d1d1; border-radius: 10px; background: #fff; }
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 0; }
+    .row + .row { border-top: 1px solid #ddd; }
+    .grow { flex: 1; min-width: 0; }
+    .badge { display: inline-block; padding: 2px 7px; border-radius: 99px; background: #e9e9e9; color: #555; font-size: 11px; white-space: nowrap; }
+    .selected { background: #dceeff; color: #075ca8; }
+    .warning { background: #fff3cd; color: #714f00; }
+    .error { margin-top: 8px; padding: 9px; border-radius: 7px; background: #ffe3e1; color: #8c1d18; }
+    progress { width: 100%; height: 8px; }
+    details { margin-top: 8px; }
+    summary { color: #1868b7; cursor: pointer; }
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
+    .cards.two { grid-template-columns: repeat(2, 1fr); }
+    .card { display: flex; min-height: 135px; flex-direction: column; padding: 10px; border: 1px solid #ccc; border-radius: 9px; background: #fff; }
+    .card.current { border: 2px solid #087ff5; padding: 9px; }
+    .card .action { margin-top: auto; padding-top: 10px; }
+    .split { display: grid; grid-template-columns: 138px 1fr; min-height: 350px; margin: -20px; }
+    .sidebar { padding: 20px 10px; border-right: 1px solid #ccc; background: #e8e8e8; border-radius: 12px 0 0 12px; }
+    .sidebar button { width: 100%; margin: 2px 0; border: 0; text-align: left; background: transparent; }
+    .sidebar button[aria-current=true] { background: #fff; }
+    .detail { padding: 20px; }
+    .choice { display: grid; grid-template-columns: 22px 1fr auto; align-items: start; gap: 8px; padding: 11px 0; }
+    .choice + .choice { border-top: 1px solid #ddd; }
+    dialog { width: 430px; padding: 18px; border: 1px solid #aaa; border-radius: 12px; color: inherit; background: #f6f6f6; box-shadow: 0 20px 60px #0008; }
+    dialog::backdrop { background: #0006; }
+    .switcher { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 12px; color: white; background: #202124; box-shadow: 0 8px 30px #0007; z-index: 5; }
+    .switcher button, .switcher select { color: white; border-color: #777; background: #383a3d; }
+    .switcher button { min-width: 34px; padding: 3px 8px; }
+    .switcher output { min-width: 165px; text-align: center; font-weight: 600; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #252525; color: #f5f5f5; }
+      .window { border-color: #555; background: #333; }
+      .group, .card { border-color: #555; background: #414141; }
+      .row + .row, .choice + .choice { border-color: #555; }
+      .muted { color: #b7b7b7; }
+      .badge { background: #555; color: #ddd; }
+      .selected { background: #164f78; color: #d8efff; }
+      .sidebar { border-color: #555; background: #292929; }
+      .sidebar button[aria-current=true] { background: #4a4a4a; }
+    }
+  </style>
+</head>
+<body>
+  <main id="app" aria-live="polite"></main>
+  <nav class="switcher" aria-label="Prototype controls">
+    <button id="previous" aria-label="Previous variant">←</button>
+    <output id="variant-name"></output>
+    <button id="next" aria-label="Next variant">→</button>
+    <label for="state">State</label>
+    <select id="state">
+      <option value="ready">Ready</option>
+      <option value="downloading">Downloading</option>
+      <option value="failed">Failed</option>
+      <option value="low-space">Low storage</option>
+    </select>
+  </nav>
+  <script>
+    const variants = {
+      A: { name: "Compact rows", render: compactRows },
+      B: { name: "Compare cards", render: compareCards },
+      C: { name: "Focused sidebar", render: focusedSidebar },
+    };
+    const params = new URLSearchParams(location.search);
+    let key = variants[params.get("variant")] ? params.get("variant") : "A";
+    let state = ["ready", "downloading", "failed", "low-space"].includes(params.get("state")) ? params.get("state") : "ready";
+
+    function statusBlock() {
+      if (state === "downloading") return `<div><div class="row"><span>Downloading Best quality…</span><button>Cancel</button></div><progress value="42" max="100">42%</progress><p class="muted small">423 MB of 1.01 GB</p></div>`;
+      if (state === "failed") return `<div class="error" role="alert"><strong>Best quality couldn't be downloaded.</strong><br>Check your connection and try again. Your selected profile has not changed. <button>Try again</button></div>`;
+      if (state === "low-space") return `<div class="error" role="alert"><strong>Not enough free storage.</strong><br>Best quality needs 1.01 GB available while it downloads.</div>`;
+      return "";
+    }
+
+    function optionalAction(label = "Download") {
+      return `<button ${state === "low-space" ? "disabled aria-describedby=storage-limit" : ""}>${label}</button>`;
+    }
+
+    function compactRows() {
+      return `<section class="window"><h1>Settings</h1>
+        <h2>Speech profiles</h2><section class="group">
+          <div class="row"><div class="grow"><h3>Dictation quality</h3><p class="muted small">Balanced · Best for everyday dictation</p></div><button onclick="document.getElementById('compact-picker').showModal()">Change…</button></div>
+          <div class="row"><div class="grow"><h3>Reading quality</h3><p class="muted small">Best quality · Natural everyday reading</p></div><button onclick="document.getElementById('compact-picker').showModal()">Change…</button></div>
+          ${statusBlock()}
+          <details><summary>Limits and storage</summary><p>Speech stays on this Mac. Accuracy and pronunciation vary. Optional profiles use additional storage.</p><p id="storage-limit" class="muted small">Dictation: Fast 181.3 MiB · Balanced 547.4 MiB · Best quality 1.007 GiB<br>Reading: Lower memory 88.1 MiB · Best quality 310.5 MiB</p></details>
+        </section><dialog id="compact-picker"><h1>Choose Dictation quality</h1>
+          <div class="row"><span><strong>Fast</strong><br><span class="muted small">Quick notes · 181.3 MiB · Low memory</span></span><button>Remove…</button></div>
+          <div class="row"><span><strong>Balanced</strong><br><span class="muted small">Everyday dictation · 547.4 MiB · Moderate memory</span></span><span class="badge selected">Selected</span></div>
+          <div class="row"><span><strong>Best quality</strong><br><span class="muted small">Accuracy over waiting · 1.007 GiB · High memory</span></span>${optionalAction()}</div>
+          ${statusBlock()}<div class="row"><span></span><button class="primary" onclick="this.closest('dialog').close()">Done</button></div>
+        </dialog>
+        <h2>Dictation</h2><section class="group"><div class="row"><span>Transcription language</span><span class="muted">Auto</span></div></section>
+        <h2>Shortcuts</h2><section class="group"><div class="row"><span>Dictation</span><span class="muted">⌃⌥Space</span></div><div class="row"><span>Read selected text</span><span class="muted">⌃⌥R</span></div></section>
+      </section>`;
+    }
+
+    function compareCards() {
+      return `<section class="window"><h1>Settings</h1><h2>Speech profiles</h2><p class="muted">Choose how tk balances quality, speed, storage, and memory. Speech stays on this Mac.</p>
+        <section class="group"><h2>Dictation quality</h2><div class="cards">
+          <article class="card"><h3>Fast</h3><span class="badge">Installed</span><p class="small">Quick notes</p><p class="muted small">181.3 MiB · Low memory</p><div class="action"><button>Remove…</button></div></article>
+          <article class="card current"><h3>Balanced</h3><span class="badge selected">Selected · Recommended</span><p class="small">Everyday dictation</p><p class="muted small">547.4 MiB · Moderate memory</p></article>
+          <article class="card"><h3>Best quality</h3><p class="small">Accuracy matters more than waiting</p><p class="muted small">1.007 GiB · High memory</p><div class="action">${optionalAction()}</div></article>
+        </div>${statusBlock()}<details><summary>Dictation limits</summary><p class="small">May miss, repeat, or invent words. Results vary with language, accent, noise, and microphone.</p></details></section>
+        <section class="group"><h2>Reading quality</h2><div class="cards two">
+          <article class="card"><h3>Lower memory</h3><p class="small">Uses less storage and memory, but may begin reading more slowly</p><p class="muted small">88.1 MiB · Lower memory</p><div class="action">${optionalAction()}</div></article>
+          <article class="card current"><h3>Best quality</h3><span class="badge selected">Selected · Recommended</span><p class="small">Natural everyday reading</p><p class="muted small">310.5 MiB · Moderate memory</p></article>
+        </div><details><summary>Reading limits</summary><p class="small">Supports German, Greek, English, French, Italian, Japanese, Brazilian Portuguese, and Chinese. Pronunciation can vary.</p></details></section>
+      </section>`;
+    }
+
+    function focusedSidebar() {
+      return `<section class="window"><div class="split">
+        <aside class="sidebar"><h2>Settings</h2><button>General</button><button aria-current="true">Speech profiles</button><button>Shortcuts</button><button>System access</button></aside>
+        <section class="detail"><h1>Speech profiles</h1><p class="muted">Everything runs privately on this Mac.</p>
+          <h2>Dictation quality</h2><section class="group">
+            <label class="choice"><input type="radio" name="dictation"><span><strong>Fast</strong><br><span class="muted small">Quick notes · 181.3 MiB · Low memory</span></span><button>Remove…</button></label>
+            <label class="choice"><input type="radio" name="dictation" checked><span><strong>Balanced</strong><br><span class="muted small">Everyday dictation · 547.4 MiB · Moderate memory</span></span><span class="badge selected">Recommended</span></label>
+            <label class="choice"><input type="radio" name="dictation"><span><strong>Best quality</strong><br><span class="muted small">Accuracy over waiting · 1.007 GiB · High memory</span></span>${optionalAction()}</label>
+            ${statusBlock()}<details><summary>What can affect accuracy?</summary><p class="small">Language, accent, noise, and microphone quality. Dictation may miss, repeat, or invent words.</p></details>
+          </section>
+          <h2>Reading quality</h2><section class="group">
+            <label class="choice"><input type="radio" name="reading"><span><strong>Lower memory</strong><br><span class="muted small">Smaller, but may begin more slowly · 88.1 MiB</span></span>${optionalAction()}</label>
+            <label class="choice"><input type="radio" name="reading" checked><span><strong>Best quality</strong><br><span class="muted small">Natural everyday reading · 310.5 MiB</span></span><span class="badge selected">Recommended</span></label>
+          </section>
+          <details><summary>Technical details</summary><p class="small">Pinned local model files, versions, checksums, and licenses.</p></details>
+        </section></div></section>`;
+    }
+
+    function render() {
+      document.getElementById("app").innerHTML = variants[key].render();
+      document.getElementById("variant-name").value = `${key} — ${variants[key].name}`;
+      document.getElementById("state").value = state;
+      params.set("variant", key); params.set("state", state);
+      history.replaceState(null, "", `?${params}`);
+    }
+    function cycle(offset) { const keys = Object.keys(variants); key = keys[(keys.indexOf(key) + offset + keys.length) % keys.length]; render(); }
+    document.getElementById("previous").onclick = () => cycle(-1);
+    document.getElementById("next").onclick = () => cycle(1);
+    document.getElementById("state").onchange = event => { state = event.target.value; render(); };
+    addEventListener("keydown", event => {
+      if (["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName) || event.target.isContentEditable) return;
+      if (event.key === "ArrowLeft") cycle(-1);
+      if (event.key === "ArrowRight") cycle(1);
+    });
+    render();
+  </script>
+</body>
+</html>

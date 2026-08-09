@@ -11,6 +11,7 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "TK",
+            exclude: ["Views/SettingsProfilesPrototype.html"],
             linkerSettings: [
                 .linkedLibrary("sqlite3")
             ]
