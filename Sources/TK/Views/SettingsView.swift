@@ -7,9 +7,9 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(SettingsDestination.allCases, selection: $destination) { destination in
-                Label(destination.title, systemImage: destination.icon)
-                    .tag(destination)
+            List(SettingsDestination.allCases, selection: $destination) { item in
+                Label(item.title, systemImage: item.icon)
+                    .tag(item)
             }
             .navigationSplitViewColumnWidth(min: 170, ideal: 190)
         } detail: {
@@ -20,7 +20,7 @@ struct SettingsView: View {
             case .systemAccess: SystemAccessSettings(model: model)
             }
         }
-        .frame(width: 760, height: 600)
+        .frame(minWidth: 760, idealWidth: 760, minHeight: 480, idealHeight: 600)
     }
 }
 
@@ -134,6 +134,7 @@ private struct SystemAccessSettings: View {
 private struct SpeechProfilesSettings: View {
     @Bindable var model: AppModel
     @State private var profileToRemove: SpeechProfile?
+    @State private var removalError: String?
 
     var body: some View {
         Form {
@@ -185,11 +186,23 @@ private struct SpeechProfilesSettings: View {
         ) {
             if let profileToRemove {
                 Button(removalButtonTitle(for: profileToRemove), role: .destructive) {
-                    try? model.profiles.remove(profileToRemove)
-                    self.profileToRemove = nil
+                    do {
+                        try model.profiles.remove(profileToRemove)
+                        self.profileToRemove = nil
+                    } catch {
+                        removalError = error.localizedDescription
+                    }
                 }
                 Button("Cancel", role: .cancel) { self.profileToRemove = nil }
             }
+        }
+        .alert("Couldn’t remove profile", isPresented: Binding(
+            get: { removalError != nil },
+            set: { if !$0 { removalError = nil } }
+        )) {
+            Button("OK") { removalError = nil }
+        } message: {
+            Text(removalError ?? "The profile could not be removed.")
         }
     }
 
@@ -206,6 +219,11 @@ private struct SpeechProfilesSettings: View {
                     systemImage: "exclamationmark.triangle"
                 )
                 .foregroundStyle(.secondary)
+            }
+            if model.profiles.downloadingProfileID != nil {
+                Text("Another download is in progress.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             ForEach(model.profiles.profiles(for: kind)) { profile in
                 profileRow(profile)
@@ -225,6 +243,12 @@ private struct SpeechProfilesSettings: View {
             .buttonStyle(.plain)
             .disabled(model.profiles.availability[profile.id]?.canSelect != true)
             .accessibilityLabel("Select \(profile.name)")
+            .accessibilityAddTraits(model.profiles.isSelected(profile) ? .isSelected : [])
+            .accessibilityHint(
+                model.profiles.availability[profile.id]?.canSelect == true
+                    ? ""
+                    : model.profiles.unavailableMessage(for: profile)
+            )
 
             VStack(alignment: .leading, spacing: 5) {
                 HStack {
@@ -238,12 +262,8 @@ private struct SpeechProfilesSettings: View {
                     .foregroundStyle(.secondary)
                 Text("Best for: \(profile.bestFor)")
                     .font(.caption)
-                if profile.id == "dictation.best-quality" {
-                    Text("Uses substantially more memory.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else if profile.id == "reading.lower-memory" {
-                    Text("May begin reading more slowly.")
+                if let notice = profile.notice {
+                    Text(notice)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -280,11 +300,6 @@ private struct SpeechProfilesSettings: View {
                     .disabled(model.profiles.downloadingProfileID != nil)
             }
             .font(.caption)
-            if model.profiles.downloadingProfileID != nil {
-                Text("Another download is in progress.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         case .downloading:
             VStack(alignment: .leading) {
                 Text("Downloading \(profile.name)…")
@@ -293,8 +308,8 @@ private struct SpeechProfilesSettings: View {
                     total: Double(profile.byteCount)
                 )
                 .accessibilityLabel("Downloading \(profile.name)")
-                .accessibilityValue("\(model.profiles.downloadedBytes) of \(profile.byteCount) bytes")
-                Text("\(model.profiles.downloadedBytes.formatted()) of \(profile.byteCount.formatted()) bytes")
+                .accessibilityValue("\(model.profiles.downloadedBytes.formatted(.byteCount(style: .file))) of \(profile.byteCount.formatted(.byteCount(style: .file)))")
+                Text("\(model.profiles.downloadedBytes.formatted(.byteCount(style: .file))) of \(profile.byteCount.formatted(.byteCount(style: .file)))")
                     .monospacedDigit()
                 Button("Cancel") { model.profiles.cancelDownload() }
             }

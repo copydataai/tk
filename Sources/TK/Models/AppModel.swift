@@ -20,6 +20,7 @@ final class AppModel {
     var transcripts: [TranscriptRecord] = []
     private(set) var isReading = false
     private(set) var readingProfileID: String?
+    private var readingOperationID: UUID?
 
     var voiceIdentifier: String {
         didSet { UserDefaults.standard.set(voiceIdentifier, forKey: "kokoroVoiceIdentifier") }
@@ -134,11 +135,16 @@ final class AppModel {
             do {
                 let artifact = try profiles.artifact(for: .reading)
                 try validateVoice(voiceIdentifier)
+                let operationID = UUID()
                 isReading = true
                 readingProfileID = artifact.profileID
+                readingOperationID = operationID
                 defer {
-                    isReading = false
-                    readingProfileID = nil
+                    if readingOperationID == operationID {
+                        isReading = false
+                        readingProfileID = nil
+                        readingOperationID = nil
+                    }
                 }
                 let text = try await macText.selectedText()
                 statusMessage = "Generating speech"
@@ -163,11 +169,16 @@ final class AppModel {
                 let artifact = try profiles.artifact(for: .reading)
                 try validateVoice(identifier)
                 statusMessage = "Generating voice preview"
+                let operationID = UUID()
                 isReading = true
                 readingProfileID = artifact.profileID
+                readingOperationID = operationID
                 defer {
-                    isReading = false
-                    readingProfileID = nil
+                    if readingOperationID == operationID {
+                        isReading = false
+                        readingProfileID = nil
+                        readingOperationID = nil
+                    }
                 }
                 try await macText.speak(
                     Self.previewText(for: identifier),

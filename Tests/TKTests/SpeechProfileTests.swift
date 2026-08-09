@@ -85,4 +85,35 @@ final class SpeechProfileTests: XCTestCase {
         XCTAssertEqual(store.selectedReadingID, "reading.best-quality")
         XCTAssertThrowsError(try store.artifact(for: .dictation))
     }
+
+    @MainActor
+    func testBundledArtifactsNeverFallBackToDownloads() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let models = directory.appendingPathComponent("models")
+        try FileManager.default.createDirectory(at: models, withIntermediateDirectories: true)
+        let bundled = try XCTUnwrap(SpeechProfile.all.first { $0.id == "dictation.balanced" })
+        FileManager.default.createFile(
+            atPath: models.appendingPathComponent(bundled.filename).path,
+            contents: Data()
+        )
+        let suite = "SpeechProfileFallbackTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("dictation.fast", forKey: SpeechProfileStore.dictationKey)
+        let store = SpeechProfileStore(
+            defaults: defaults,
+            modelDirectory: models,
+            resourceDirectory: directory.appendingPathComponent("resources")
+        )
+
+        XCTAssertEqual(
+            store.availability[bundled.id],
+            .failed("The bundled profile is missing. Reinstall tk.")
+        )
+        let selected = try XCTUnwrap(SpeechProfile.all.first { $0.id == "dictation.fast" })
+        XCTAssertThrowsError(try store.remove(selected))
+        XCTAssertEqual(store.selectedDictationID, selected.id)
+    }
 }

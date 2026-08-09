@@ -180,10 +180,16 @@ final class SpeechProfileStore {
 
     func remove(_ profile: SpeechProfile) throws {
         guard !profile.isBundled else { return }
-        if isSelected(profile),
-           let defaultID = SpeechProfile.defaultIDs[profile.kind],
-           let bundledDefault = SpeechProfile.all.first(where: { $0.id == defaultID }) {
+        if isSelected(profile) {
+            guard let defaultID = SpeechProfile.defaultIDs[profile.kind],
+                  let bundledDefault = SpeechProfile.all.first(where: { $0.id == defaultID }),
+                  availability[bundledDefault.id] == .available else {
+                throw SpeechProfileError.unavailable("The included profile is unavailable. Reinstall tk before removing the selected profile.")
+            }
             select(bundledDefault)
+            guard isSelected(bundledDefault) else {
+                throw SpeechProfileError.unavailable("The included profile could not be selected.")
+            }
         }
         try? FileManager.default.removeItem(at: partialURL(for: profile))
         if let url = artifactURL(for: profile) {
@@ -229,9 +235,9 @@ final class SpeechProfileStore {
     }
 
     private func artifactURL(for profile: SpeechProfile) -> URL? {
-        if profile.isBundled,
-           let bundled = resourceDirectory?.appendingPathComponent("models/\(profile.filename)"),
-           FileManager.default.fileExists(atPath: bundled.path) {
+        if profile.isBundled {
+            guard let bundled = resourceDirectory?.appendingPathComponent("models/\(profile.filename)"),
+                  FileManager.default.fileExists(atPath: bundled.path) else { return nil }
             return bundled
         }
         let downloaded = modelDirectory.appendingPathComponent(profile.filename)
@@ -327,6 +333,10 @@ final class SpeechProfileStore {
                     try Task.checkCancellation()
                     buffer.append(byte)
                     if buffer.count == 64 * 1024 {
+                        guard total <= profile.byteCount - Int64(buffer.count) else {
+                            try? FileManager.default.removeItem(at: partial)
+                            throw URLError(.cannotDecodeContentData)
+                        }
                         try handle.write(contentsOf: Data(buffer))
                         total += Int64(buffer.count)
                         buffer.removeAll(keepingCapacity: true)
@@ -334,6 +344,10 @@ final class SpeechProfileStore {
                     }
                 }
                 if !buffer.isEmpty {
+                    guard total <= profile.byteCount - Int64(buffer.count) else {
+                        try? FileManager.default.removeItem(at: partial)
+                        throw URLError(.cannotDecodeContentData)
+                    }
                     try handle.write(contentsOf: Data(buffer))
                     total += Int64(buffer.count)
                     await progress(total)

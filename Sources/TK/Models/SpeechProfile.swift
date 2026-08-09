@@ -19,6 +19,14 @@ struct SpeechProfile: Identifiable, Hashable, Sendable {
     let downloadURL: URL
     let isBundled: Bool
 
+    var notice: String? {
+        switch id {
+        case "dictation.best-quality": "Uses substantially more memory."
+        case "reading.lower-memory": "May begin reading more slowly."
+        default: nil
+        }
+    }
+
     var supportedTarget: String { "macOS 14 or newer · Apple silicon" }
     var runtimeIdentity: String {
         kind == .dictation
@@ -38,7 +46,7 @@ struct SpeechProfile: Identifiable, Hashable, Sendable {
             name: "Fast",
             bestFor: "Quick notes when speed and lower resource use matter more than catching every word.",
             downloadSize: "181.3 MiB",
-            memory: "Low memory",
+            memory: "Low",
             byteCount: 190_085_487,
             filename: "ggml-small-q5_1.bin",
             sha256: "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
@@ -52,7 +60,7 @@ struct SpeechProfile: Identifiable, Hashable, Sendable {
             name: "Balanced",
             bestFor: "Everyday dictation with a strong balance of speed and accuracy.",
             downloadSize: "547.4 MiB",
-            memory: "Moderate memory",
+            memory: "Moderate",
             byteCount: 574_041_195,
             filename: "ggml-large-v3-turbo-q5_0.bin",
             sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
@@ -66,7 +74,7 @@ struct SpeechProfile: Identifiable, Hashable, Sendable {
             name: "Best quality",
             bestFor: "Dictation where the best accuracy offered by tk matters more than waiting and resource use.",
             downloadSize: "1.007 GiB",
-            memory: "High memory",
+            memory: "High",
             byteCount: 1_081_140_203,
             filename: "ggml-large-v3-q5_0.bin",
             sha256: "d75795ecff3f83b5faa89d1900604ad8c780abd5739fae406de19f23ecd98ad1",
@@ -80,7 +88,7 @@ struct SpeechProfile: Identifiable, Hashable, Sendable {
             name: "Lower memory",
             bestFor: "Macs where storage and memory matter more than how quickly reading begins.",
             downloadSize: "88.1 MiB",
-            memory: "Lower memory",
+            memory: "Lower",
             byteCount: 92_361_116,
             filename: "kokoro-v1.0-quantized.onnx",
             sha256: "fbae9257e1e05ffc727e951ef9b9c98418e6d79f1c9b6b13bd59f5c9028a1478",
@@ -94,7 +102,7 @@ struct SpeechProfile: Identifiable, Hashable, Sendable {
             name: "Best quality",
             bestFor: "Natural everyday reading.",
             downloadSize: "310.5 MiB",
-            memory: "Moderate memory",
+            memory: "Moderate",
             byteCount: 325_532_232,
             filename: "kokoro-v1.0-fp32.onnx",
             sha256: "8fbea51ea711f2af382e88c833d9e288c6dc82ce5e98421ea61c058ce21a34cb",
