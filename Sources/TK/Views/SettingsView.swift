@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 struct SettingsView: View {
     @Bindable var model: AppModel
     @State private var destination = SettingsDestination.speechProfiles
@@ -48,6 +49,7 @@ private enum SettingsDestination: String, CaseIterable, Identifiable {
     }
 }
 
+@MainActor
 private struct GeneralSettings: View {
     @Bindable var model: AppModel
 
@@ -79,6 +81,7 @@ private struct GeneralSettings: View {
     }
 }
 
+@MainActor
 private struct ShortcutSettings: View {
     @Bindable var model: AppModel
 
@@ -96,6 +99,7 @@ private struct ShortcutSettings: View {
     }
 }
 
+@MainActor
 private struct SystemAccessSettings: View {
     @Bindable var model: AppModel
 
@@ -126,6 +130,7 @@ private struct SystemAccessSettings: View {
     }
 }
 
+@MainActor
 private struct SpeechProfilesSettings: View {
     @Bindable var model: AppModel
     @State private var profileToRemove: SpeechProfile?

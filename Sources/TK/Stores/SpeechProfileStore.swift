@@ -145,37 +145,31 @@ final class SpeechProfileStore {
         availability[profile.id] = .downloading
         deletePartialOnCancellation = false
         let directory = modelDirectory
-        let store = self
-
-        downloadTask = Task { [weak store] in
+        downloadTask = Task {
             do {
-                try await Self.downloadFile(profile, to: directory) { [weak store] bytes in
-                    Task { @MainActor in
-                        guard store?.downloadingProfileID == profile.id else { return }
-                        store?.downloadedBytes = bytes
-                    }
+                try await Self.downloadFile(profile, to: directory) { bytes in
+                    guard self.downloadingProfileID == profile.id else { return }
+                    self.downloadedBytes = bytes
                 }
-                guard let store else { return }
-                store.verifiedFiles[profile.id] = store.artifactURL(for: profile).flatMap(FileFingerprint.init)
-                store.availability[profile.id] = .available
+                verifiedFiles[profile.id] = artifactURL(for: profile).flatMap(FileFingerprint.init)
+                availability[profile.id] = .available
             } catch {
-                guard let store else { return }
-                if store.deletePartialOnCancellation || Task.isCancelled {
-                    try? FileManager.default.removeItem(at: store.partialURL(for: profile))
-                    store.availability[profile.id] = .missing
+                if deletePartialOnCancellation || Task.isCancelled {
+                    try? FileManager.default.removeItem(at: partialURL(for: profile))
+                    availability[profile.id] = .missing
                 } else if error is URLError {
-                    store.availability[profile.id] = .interrupted(
+                    availability[profile.id] = .interrupted(
                         "The download was interrupted. Retry to continue."
                     )
                 } else {
-                    store.availability[profile.id] = .failed(error.localizedDescription)
+                    availability[profile.id] = .failed(error.localizedDescription)
                 }
             }
-            guard let store, store.downloadingProfileID == profile.id else { return }
-            store.downloadingProfileID = nil
-            store.downloadedBytes = 0
-            store.downloadTask = nil
-            store.deletePartialOnCancellation = false
+            guard downloadingProfileID == profile.id else { return }
+            downloadingProfileID = nil
+            downloadedBytes = 0
+            downloadTask = nil
+            deletePartialOnCancellation = false
         }
     }
 
@@ -273,7 +267,7 @@ final class SpeechProfileStore {
     nonisolated private static func downloadFile(
         _ profile: SpeechProfile,
         to directory: URL,
-        progress: @Sendable @escaping (Int64) -> Void
+        progress: @MainActor @Sendable @escaping (Int64) -> Void
     ) async throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let partial = directory.appendingPathComponent("\(profile.filename).partial")
@@ -336,13 +330,13 @@ final class SpeechProfileStore {
                         try handle.write(contentsOf: Data(buffer))
                         total += Int64(buffer.count)
                         buffer.removeAll(keepingCapacity: true)
-                        progress(total)
+                        await progress(total)
                     }
                 }
                 if !buffer.isEmpty {
                     try handle.write(contentsOf: Data(buffer))
                     total += Int64(buffer.count)
-                    progress(total)
+                    await progress(total)
                 }
             }
             guard total == profile.byteCount else { throw URLError(.cannotDecodeContentData) }
