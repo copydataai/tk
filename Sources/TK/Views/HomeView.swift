@@ -34,7 +34,7 @@ struct HomeView: View {
                                 dictationButtonTitle,
                                 systemImage: model.dictation.isRecording
                                     ? "stop.fill"
-                                    : "mic.fill"
+                                    : "waveform"
                             )
                         }
                         .buttonStyle(.borderedProminent)

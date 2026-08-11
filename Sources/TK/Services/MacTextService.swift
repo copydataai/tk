@@ -62,6 +62,8 @@ final class MacTextService: NSObject {
     private var audioPlayer: AVQueuePlayer?
     private var speechURLs: [URL] = []
     private var insertionTarget: AXUIElement?
+    private var pasteboardOperationInProgress = false
+    private var pasteboardWaiters: [CheckedContinuation<Void, Never>] = []
 
     override init() {
         let check = Self.speechChunks(String(repeating: "word ", count: 100))
@@ -124,14 +126,17 @@ final class MacTextService: NSObject {
             try await Task.sleep(for: .milliseconds(50))
         }
 
+        await acquirePasteboardAccess()
+        defer { releasePasteboardAccess() }
         let pasteboard = NSPasteboard.general
         let snapshot = PasteboardSnapshot(pasteboard)
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
+        let insertedTextChangeCount = pasteboard.changeCount
         try postCommandKey(UInt16(kVK_ANSI_V))
         // ponytail: fixed delay keeps the clipboard intact; add per-app confirmation if slow apps miss pastes.
         try await Task.sleep(for: .milliseconds(150))
-        snapshot.restore(to: pasteboard)
+        snapshot.restore(to: pasteboard, ifChangeCountIs: insertedTextChangeCount)
     }
 
     func selectedText() async throws -> String {
@@ -150,14 +155,20 @@ final class MacTextService: NSObject {
             }
         }
 
+        await acquirePasteboardAccess()
+        defer { releasePasteboardAccess() }
         let pasteboard = NSPasteboard.general
         let snapshot = PasteboardSnapshot(pasteboard)
-        let changeCount = pasteboard.changeCount
+        pasteboard.clearContents()
+        pasteboard.setData(Data(), forType: .tkCopySentinel)
         try postCommandKey(UInt16(kVK_ANSI_C))
         try await Task.sleep(for: .milliseconds(150))
-        defer { snapshot.restore(to: pasteboard) }
+        let copiedTextChangeCount = pasteboard.changeCount
+        defer {
+            snapshot.restore(to: pasteboard, ifChangeCountIs: copiedTextChangeCount)
+        }
 
-        guard pasteboard.changeCount != changeCount,
+        guard pasteboard.data(forType: .tkCopySentinel) == nil,
               let text = pasteboard.string(forType: .string),
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw MacTextError.noSelectedText
@@ -448,9 +459,31 @@ final class MacTextService: NSObject {
         keyDown.post(tap: .cghidEventTap)
         keyUp.post(tap: .cghidEventTap)
     }
+
+    private func acquirePasteboardAccess() async {
+        if !pasteboardOperationInProgress {
+            pasteboardOperationInProgress = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            pasteboardWaiters.append(continuation)
+        }
+    }
+
+    private func releasePasteboardAccess() {
+        guard !pasteboardWaiters.isEmpty else {
+            pasteboardOperationInProgress = false
+            return
+        }
+        pasteboardWaiters.removeFirst().resume()
+    }
 }
 
-private struct PasteboardSnapshot {
+private extension NSPasteboard.PasteboardType {
+    static let tkCopySentinel = Self("com.tk.copy-sentinel")
+}
+
+struct PasteboardSnapshot {
     let items: [[NSPasteboard.PasteboardType: Data]]
 
     init(_ pasteboard: NSPasteboard) {
@@ -461,7 +494,9 @@ private struct PasteboardSnapshot {
         } ?? []
     }
 
-    func restore(to pasteboard: NSPasteboard) {
+    @discardableResult
+    func restore(to pasteboard: NSPasteboard, ifChangeCountIs expectedChangeCount: Int) -> Bool {
+        guard pasteboard.changeCount == expectedChangeCount else { return false }
         pasteboard.clearContents()
         let restoredItems = items.map { values in
             let item = NSPasteboardItem()
@@ -473,5 +508,6 @@ private struct PasteboardSnapshot {
         if !restoredItems.isEmpty {
             pasteboard.writeObjects(restoredItems)
         }
+        return true
     }
 }

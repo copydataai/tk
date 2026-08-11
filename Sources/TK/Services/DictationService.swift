@@ -18,8 +18,8 @@ final class DictationService {
     @ObservationIgnored private var captureOutput: AVCaptureAudioFileOutput?
     @ObservationIgnored private var recordingDelegate: RecordingDelegate?
     @ObservationIgnored private var recordingLanguage: String?
-    @ObservationIgnored private var isPreparing = false
-    @ObservationIgnored private var isFinalizing = false
+    private(set) var isPreparing = false
+    private(set) var isFinalizing = false
     @ObservationIgnored private var shouldTranscribe = false
 
     func toggle(language: String? = nil, artifact: SpeechArtifact? = nil) {

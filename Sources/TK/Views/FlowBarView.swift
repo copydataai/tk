@@ -20,11 +20,11 @@ struct FlowBarView: View {
                 Image(systemName: "waveform")
                     .font(.title3.bold())
                     .foregroundStyle(flowAccent)
-                    .symbolEffect(
-                        .variableColor.iterative,
-                        options: .repeating,
-                        isActive: true
-                    )
+                .symbolEffect(
+                    .variableColor.iterative,
+                    options: .repeating,
+                    isActive: model.dictation.isRecording
+                )
                 Text("Listening")
                     .font(.callout.weight(.medium))
 
@@ -37,6 +37,13 @@ struct FlowBarView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(flowAccent)
                 .help("Stop and insert")
+                .accessibilityLabel("Stop recording and insert transcription")
+            } else if model.dictation.isPreparing {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Starting…")
+                    .font(.callout.weight(.medium))
+                    .padding(.trailing, 4)
             } else if model.dictation.isTranscribing {
                 ProgressView()
                     .controlSize(.small)
@@ -47,7 +54,7 @@ struct FlowBarView: View {
                 Button {
                     model.toggleDictation()
                 } label: {
-                    Image(systemName: "mic.fill")
+                    Image(systemName: "waveform")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.black)
                         .frame(width: 32, height: 32)
@@ -71,6 +78,14 @@ struct FlowBarView: View {
         .background(FloatingWindowConfigurator())
         .accessibilityElement(children: .contain)
         .accessibilityLabel("tk dictation bar")
+        .accessibilityValue(accessibilityValue)
+    }
+
+    private var accessibilityValue: String {
+        if model.dictation.isRecording { return "Listening" }
+        if model.dictation.isPreparing { return "Starting" }
+        if model.dictation.isTranscribing { return "Transcribing" }
+        return "Ready"
     }
 }
 
