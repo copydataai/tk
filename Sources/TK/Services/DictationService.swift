@@ -258,6 +258,7 @@ final class DictationService {
         )
 
         var lastError: Error?
+        var fallbackDevice: AVCaptureDevice?
         if let savedDevice = devices.first(where: { $0.uniqueID == savedID }) {
             do {
                 return try configure(savedDevice)
@@ -268,8 +269,29 @@ final class DictationService {
 
         for device in devices {
             do {
-                guard try probe(device) else { continue }
-                return try configure(device)
+                let result = try probe(device)
+                if result.works {
+                    return try configure(device)
+                }
+                if fallbackDevice == nil && result.hasSamples {
+                    fallbackDevice = device
+                }
+            } catch {
+                lastError = error
+            }
+        }
+
+        if let fallbackDevice {
+            do {
+                return try configure(fallbackDevice)
+            } catch {
+                lastError = error
+            }
+        }
+
+        if let firstDevice = devices.first {
+            do {
+                return try configure(firstDevice)
             } catch {
                 lastError = error
             }
@@ -295,7 +317,12 @@ final class DictationService {
         )
     }
 
-    nonisolated private static func probe(_ device: AVCaptureDevice) throws -> Bool {
+    private struct ProbeResult {
+        let works: Bool
+        let hasSamples: Bool
+    }
+
+    nonisolated private static func probe(_ device: AVCaptureDevice) throws -> ProbeResult {
         let session = AVCaptureSession()
         let input = try AVCaptureDeviceInput(device: device)
         let output = AVCaptureAudioDataOutput()
@@ -317,7 +344,11 @@ final class DictationService {
             .max() ?? -.infinity
         session.stopRunning()
         output.setSampleBufferDelegate(nil, queue: nil)
-        return sink.receivedSamples && isWorkingInput(level: level)
+        let hasSamples = sink.receivedSamples
+        return ProbeResult(
+            works: hasSamples && isWorkingInput(level: level),
+            hasSamples: hasSamples
+        )
     }
 
     nonisolated private static func devicePriority(
