@@ -114,16 +114,7 @@ final class MacTextService: NSObject {
         }
 
         if let target {
-            var processIdentifier: pid_t = 0
-            if AXUIElementGetPid(target, &processIdentifier) == .success {
-                NSRunningApplication(processIdentifier: processIdentifier)?.activate()
-            }
-            AXUIElementSetAttributeValue(
-                target,
-                kAXFocusedAttribute as CFString,
-                kCFBooleanTrue
-            )
-            try await Task.sleep(for: .milliseconds(50))
+            try await restoreFocus(to: target)
         }
 
         await acquirePasteboardAccess()
@@ -458,6 +449,42 @@ final class MacTextService: NSObject {
         keyUp.flags = .maskCommand
         keyDown.post(tap: .cghidEventTap)
         keyUp.post(tap: .cghidEventTap)
+    }
+
+    private func restoreFocus(to target: AXUIElement) async throws {
+        var processIdentifier: pid_t = 0
+        guard AXUIElementGetPid(target, &processIdentifier) == .success else { return }
+
+        var windowValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(
+            target,
+            kAXWindowAttribute as CFString,
+            &windowValue
+        ) == .success,
+           let windowValue {
+            let window = windowValue as! AXUIElement
+            AXUIElementSetAttributeValue(
+                window,
+                kAXMainAttribute as CFString,
+                kCFBooleanTrue
+            )
+            AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+        }
+
+        NSRunningApplication(processIdentifier: processIdentifier)?.activate()
+        AXUIElementSetAttributeValue(
+            target,
+            kAXFocusedAttribute as CFString,
+            kCFBooleanTrue
+        )
+
+        for _ in 0..<20 {
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier == processIdentifier {
+                try await Task.sleep(for: .milliseconds(50))
+                return
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
     }
 
     private func acquirePasteboardAccess() async {
