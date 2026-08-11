@@ -103,14 +103,13 @@ final class AppModel {
     }
 
     func toggleDictation() {
-        guard accessibilityGranted else {
-            requestAccessibility()
-            return
-        }
         if dictation.isRecording || dictation.isTranscribing {
             dictation.toggle(language: transcriptionLanguageCode)
             return
         }
+
+        guard ensureAccessibilityPermission() else { return }
+
         do {
             let artifact = try profiles.artifact(for: .dictation)
             macText.rememberInsertionTarget()
@@ -126,10 +125,7 @@ final class AppModel {
     }
 
     func readSelection() {
-        guard accessibilityGranted else {
-            requestAccessibility()
-            return
-        }
+        guard ensureAccessibilityPermission() else { return }
 
         Task {
             do {
@@ -253,6 +249,15 @@ final class AppModel {
                 "The saved voice is unavailable. Choose another voice in Read Aloud."
             )
         }
+    }
+
+    private func ensureAccessibilityPermission() -> Bool {
+        refreshPermissions()
+        guard accessibilityGranted else {
+            requestAccessibility()
+            return false
+        }
+        return true
     }
 
     private func saveAndInsert(_ text: String) async {
