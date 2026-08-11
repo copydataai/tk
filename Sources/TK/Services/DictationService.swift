@@ -21,14 +21,19 @@ final class DictationService {
     private(set) var isPreparing = false
     private(set) var isFinalizing = false
     @ObservationIgnored private var shouldTranscribe = false
+    @ObservationIgnored private var preparationID: UUID?
 
     func toggle(language: String? = nil, artifact: SpeechArtifact? = nil) {
         guard !isTranscribing else {
             status = "Transcription is still running"
             return
         }
-        guard !isPreparing, !isFinalizing else {
-            status = "The microphone is still getting ready"
+        if isPreparing {
+            cancelPreparation()
+            return
+        }
+        guard !isFinalizing else {
+            status = "The recording is still finishing"
             return
         }
         if isRecording {
@@ -48,6 +53,10 @@ final class DictationService {
     }
 
     func cancel() {
+        if isPreparing {
+            cancelPreparation()
+            return
+        }
         guard isRecording else { return }
         shouldTranscribe = false
         stopRecording()
@@ -55,29 +64,45 @@ final class DictationService {
     }
 
     private func requestMicrophonePermission(language: String?, artifact: SpeechArtifact) {
+        let operationID = UUID()
+        preparationID = operationID
+        isPreparing = true
+        status = "Waiting for microphone access…"
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
-            startRecording(language: language, profileID: artifact.profileID)
+            startRecording(
+                language: language,
+                profileID: artifact.profileID,
+                operationID: operationID
+            )
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
                 Task { @MainActor in
-                    guard let self else { return }
+                    guard let self, self.preparationID == operationID else { return }
                     if granted {
-                        self.startRecording(language: language, profileID: artifact.profileID)
+                        self.startRecording(
+                            language: language,
+                            profileID: artifact.profileID,
+                            operationID: operationID
+                        )
                     } else {
+                        self.preparationID = nil
+                        self.isPreparing = false
                         self.activeProfileID = nil
                         self.status = "Microphone permission is required"
                     }
                 }
             }
         default:
+            preparationID = nil
+            isPreparing = false
             activeProfileID = nil
             status = "Microphone permission is required"
         }
     }
 
-    private func startRecording(language: String?, profileID: String) {
-        isPreparing = true
+    private func startRecording(language: String?, profileID: String, operationID: UUID) {
+        guard preparationID == operationID else { return }
         status = "Choosing a working microphone…"
 
         Task {
@@ -85,6 +110,10 @@ final class DictationService {
                 let setup = try await Task.detached(priority: .userInitiated) {
                     try Self.prepareCapture()
                 }.value
+                guard preparationID == operationID else {
+                    Task.detached { setup.session.stopRunning() }
+                    return
+                }
                 let url = FileManager.default.temporaryDirectory
                     .appendingPathComponent("tk-\(UUID().uuidString)")
                     .appendingPathExtension("caf")
@@ -110,11 +139,22 @@ final class DictationService {
                 )
                 status = "Listening on \(setup.deviceName) — press the shortcut again to insert"
             } catch {
+                guard preparationID == operationID else { return }
                 activeProfileID = nil
                 status = "Could not start the microphone: \(error.localizedDescription)"
             }
-            isPreparing = false
+            if preparationID == operationID {
+                preparationID = nil
+                isPreparing = false
+            }
         }
+    }
+
+    private func cancelPreparation() {
+        preparationID = nil
+        isPreparing = false
+        activeProfileID = nil
+        status = "Dictation cancelled"
     }
 
     private func finish() {
