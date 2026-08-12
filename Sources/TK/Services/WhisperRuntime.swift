@@ -4,6 +4,9 @@ import Foundation
 actor WhisperRuntime {
     static let shared = WhisperRuntime()
 
+    private static let maxAudioBytes = 64 * 1024 * 1024
+    private static let maxDuration: TimeInterval = 15 * 60
+
     private var session: LocalInferenceSession?
     private var activeProfileID: String?
 
@@ -74,7 +77,10 @@ actor WhisperRuntime {
     private nonisolated static func validatedWAV(_ url: URL) throws -> ValidatedAudio {
         let url = url.standardizedFileURL
         guard url.isFileURL,
-              (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+              let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
+              values.isRegularFile == true,
+              let fileSize = values.fileSize,
+              fileSize <= maxAudioBytes else {
             throw WhisperRuntimeError.invalidAudio
         }
         let file = try FileHandle(forReadingFrom: url)
@@ -91,9 +97,11 @@ actor WhisperRuntime {
               audioFile.length > 0 else {
             throw WhisperRuntimeError.invalidAudio
         }
+        let duration = Double(audioFile.length) / format.sampleRate
+        guard duration <= maxDuration else { throw WhisperRuntimeError.invalidAudio }
         return ValidatedAudio(
             url: url,
-            duration: Double(audioFile.length) / format.sampleRate
+            duration: duration
         )
     }
 

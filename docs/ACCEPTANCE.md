@@ -66,6 +66,11 @@ Repeat the following in every target app listed in the compatibility record:
 - [ ] Disconnect networking, relaunch the installed app, and complete dictation and read-aloud successfully using bundled defaults.
 - [ ] Confirm no model download or account sign-in is requested for bundled defaults.
 - [ ] Confirm microphone audio is not retained after dictation.
+- [ ] During dictation, confirm the CAF recording and converted speech WAV exist only inside one private `tk-audio/<operation UUID>` directory. Confirm its ownership marker contains only operation and process identity, not transcript content.
+- [ ] Confirm completing, failing, or cancelling dictation removes that operation's complete audio directory.
+- [ ] Record past the 15-minute or 64 MiB capture limit and confirm dictation stops with a recoverable failure and removes its audio directory.
+- [ ] Seed launch cleanup with fresh, stale, unrelated, symlinked, and verified-live operation directories. Confirm only stale tk-owned directories without a verified live owner are removed, in operation-ID order, without following paths outside `tk-audio`.
+- [ ] Confirm the launch cleanup report contains only operation identifiers and aggregate counts, not transcript or audio content.
 - [ ] Confirm local history persists after relaunch and can be cleared through the app.
 - [ ] Export History and confirm every record includes `contentTrust: untrustedSpeechRecognition`, `agentEligibility: ineligible`, an optional `sourceOperationID`, and `retentionDisposition: retainedHistory`.
 - [ ] Open a database created by the prior release and confirm legacy rows receive the same safe trust and agent-eligibility defaults.
@@ -84,6 +89,8 @@ The pinned whisper.cpp server does not provide narrow, distributable request aut
 - [ ] Confirm a second concurrent dictation is rejected while the first helper is active.
 - [ ] Confirm timeout and cancellation terminate the helper and remove its operation directory.
 - [ ] Confirm the packaged app contains `whisper-cli` and does not contain `whisper-server`.
+
+Dictation audio is separately bounded to 15 minutes and 64 MiB. Each operation owns a private directory containing its CAF recording, converted speech WAV, and a content-free ownership marker. Normal completion, failure, and cancellation remove the directory. Launch cleanup considers only direct child directories with valid tk ownership markers, retains fresh or verified-live operations, and reports only identifiers and counts. This is application-scoped cleanup and makes no claim about filesystem snapshots, backups, swap, or storage-device remanence.
 
 This boundary protects against unrelated local processes reaching an unauthenticated resident inference listener. Compromise of the same user account or the full system remains out of scope because such an attacker can inspect or control tk's files and processes directly.
 

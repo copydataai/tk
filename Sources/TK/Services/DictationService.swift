@@ -14,8 +14,10 @@ final class DictationService {
     private(set) var activeProfileID: String?
     private(set) var lastStartMilliseconds: Double?
     private let pendingStore: PendingDictationStore
+    private let artifactCleaner: OperationArtifactCleaner
     private(set) var pendingResult: PendingDictation?
     private(set) var pendingStoreError: Error?
+    private(set) var artifactCleanupReport: OperationArtifactCleanupReport
 
     var onTranscriptReady: ((String) -> Void)?
     var onCommitCandidate: ((UUID, String) -> Void)?
@@ -30,7 +32,12 @@ final class DictationService {
     @ObservationIgnored private var preparationID: UUID?
     @ObservationIgnored private var preparationStartedAt: ContinuousClock.Instant?
 
-    init(pendingStore: PendingDictationStore? = nil) {
+    init(
+        pendingStore: PendingDictationStore? = nil,
+        artifactCleaner: OperationArtifactCleaner = OperationArtifactCleaner()
+    ) {
+        self.artifactCleaner = artifactCleaner
+        artifactCleanupReport = artifactCleaner.cleanupStale()
         let resolvedStore: PendingDictationStore
         do {
             resolvedStore = try pendingStore ?? PendingDictationStore.applicationSupport()
@@ -158,9 +165,7 @@ final class DictationService {
                     Task.detached { setup.session.stopRunning() }
                     return
                 }
-                let url = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("tk-\(UUID().uuidString)")
-                    .appendingPathExtension("caf")
+                let artifacts = try artifactCleaner.createOperation(operationID: operationID)
                 let delegate = RecordingDelegate { [weak self] url, error in
                     Task { @MainActor in
                         self?.recordingDidFinish(at: url, error: error)
@@ -179,14 +184,16 @@ final class DictationService {
                 if let preparationStartedAt {
                     lastStartMilliseconds = preparationStartedAt.duration(to: .now).dictationMilliseconds
                 }
+                MicrophoneCapture.apply(.production, to: setup.output)
                 setup.output.startRecording(
-                    to: url,
+                    to: artifacts.recordingURL,
                     outputFileType: .caf,
                     recordingDelegate: delegate
                 )
                 status = "Listening on \(setup.deviceName) — press the shortcut again to insert"
             } catch {
                 guard preparationID == operationID else { return }
+                artifactCleaner.removeOperation(operationID: operationID)
                 activeProfileID = nil
                 fail(kind: .capture, message: error.localizedDescription, recoverable: true)
                 status = "Could not start the microphone: \(error.localizedDescription)"
@@ -232,13 +239,17 @@ final class DictationService {
         Task.detached { session?.stopRunning() }
 
         guard shouldTranscribe else {
-            try? FileManager.default.removeItem(at: recordingURL)
+            if let operationID = transaction?.operationID {
+                artifactCleaner.removeOperation(operationID: operationID)
+            }
             transaction?.setAudioState(.discarded)
             activeProfileID = nil
             return
         }
         guard MicrophoneCapture.recordingSucceeded(error) else {
-            try? FileManager.default.removeItem(at: recordingURL)
+            if let operationID = transaction?.operationID {
+                artifactCleaner.removeOperation(operationID: operationID)
+            }
             transaction?.setAudioState(.discarded)
             fail(kind: .capture, message: error!.localizedDescription, recoverable: true)
             activeProfileID = nil
@@ -252,12 +263,11 @@ final class DictationService {
         let operationID = transaction?.operationID
 
         Task {
-            let wavURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("tk-\(UUID().uuidString)")
-                .appendingPathExtension("wav")
+            guard let operationID else { return }
+            let wavURL = recordingURL.deletingLastPathComponent().appendingPathComponent("speech.wav")
             defer {
-                try? FileManager.default.removeItem(at: recordingURL)
-                try? FileManager.default.removeItem(at: wavURL)
+                artifactCleaner.removeOperation(operationID: operationID)
+                transaction?.setAudioState(.discarded)
                 activeProfileID = nil
             }
             do {
@@ -286,9 +296,7 @@ final class DictationService {
                     status = "Nothing heard"
                 } else {
                     onTranscriptReady?(text)
-                    if let operationID {
-                        onCommitCandidate?(operationID, text)
-                    }
+                    onCommitCandidate?(operationID, text)
                     status = "Transcription ready"
                 }
             } catch {

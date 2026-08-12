@@ -27,4 +27,20 @@ final class MicrophoneCaptureTests: XCTestCase {
             userInfo: [AVErrorRecordingSuccessfullyFinishedKey: false]
         )))
     }
+
+    func testProductionRecordingLimitsAreBounded() {
+        XCTAssertEqual(MicrophoneCapture.Limits.production.maxDuration, 15 * 60)
+        XCTAssertEqual(MicrophoneCapture.Limits.production.maxFileSize, 64 * 1024 * 1024)
+    }
+
+    func testRecordingLimitErrorsAreRejectedEvenWhenAVFoundationReportsSuccess() {
+        let error = NSError(
+            domain: AVFoundationErrorDomain,
+            code: AVError.maximumDurationReached.rawValue,
+            userInfo: [AVErrorRecordingSuccessfullyFinishedKey: true]
+        )
+
+        XCTAssertTrue(MicrophoneCapture.recordingLimitExceeded(error))
+        XCTAssertFalse(MicrophoneCapture.recordingSucceeded(error))
+    }
 }
