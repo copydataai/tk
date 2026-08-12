@@ -5,8 +5,9 @@ import Observation
 @MainActor
 @Observable
 final class DictationService {
-    private(set) var isRecording = false
-    private(set) var isTranscribing = false
+    private var activity = DictationActivity()
+    var isRecording: Bool { activity.isRecording }
+    var isTranscribing: Bool { activity.isTranscribing }
     private(set) var transcript = ""
     private(set) var status = "Press the shortcut to dictate"
     private(set) var activeProfileID: String?
@@ -18,9 +19,8 @@ final class DictationService {
     @ObservationIgnored private var captureOutput: AVCaptureAudioFileOutput?
     @ObservationIgnored private var recordingDelegate: RecordingDelegate?
     @ObservationIgnored private var recordingLanguage: String?
-    private(set) var isPreparing = false
-    private(set) var isFinalizing = false
-    @ObservationIgnored private var shouldTranscribe = false
+    var isPreparing: Bool { activity.isPreparing }
+    var isFinalizing: Bool { activity.isFinalizing }
     @ObservationIgnored private var preparationID: UUID?
 
     func toggle(language: String? = nil, artifact: SpeechArtifact? = nil) {
@@ -58,15 +58,14 @@ final class DictationService {
             return
         }
         guard isRecording else { return }
-        shouldTranscribe = false
-        stopRecording()
+        stopRecording(shouldTranscribe: false)
         status = "Dictation cancelled"
     }
 
     private func requestMicrophonePermission(language: String?, artifact: SpeechArtifact) {
         let operationID = UUID()
         preparationID = operationID
-        isPreparing = true
+        activity.beginPreparing()
         status = "Waiting for microphone access…"
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
@@ -87,7 +86,7 @@ final class DictationService {
                         )
                     } else {
                         self.preparationID = nil
-                        self.isPreparing = false
+                        self.activity.cancelPreparation()
                         self.activeProfileID = nil
                         self.status = "Microphone permission is required"
                     }
@@ -95,7 +94,7 @@ final class DictationService {
             }
         default:
             preparationID = nil
-            isPreparing = false
+            activity.cancelPreparation()
             activeProfileID = nil
             status = "Microphone permission is required"
         }
@@ -108,7 +107,7 @@ final class DictationService {
         Task {
             do {
                 let setup = try await Task.detached(priority: .userInitiated) {
-                    try Self.prepareCapture()
+                    try MicrophoneCapture.prepare()
                 }.value
                 guard preparationID == operationID else {
                     Task.detached { setup.session.stopRunning() }
@@ -130,8 +129,7 @@ final class DictationService {
                 activeProfileID = profileID
                 UserDefaults.standard.set(setup.deviceID, forKey: "workingMicrophoneID")
                 transcript = ""
-                shouldTranscribe = false
-                isRecording = true
+                activity.beginRecording()
                 setup.output.startRecording(
                     to: url,
                     outputFileType: .caf,
@@ -145,34 +143,31 @@ final class DictationService {
             }
             if preparationID == operationID {
                 preparationID = nil
-                isPreparing = false
+                activity.cancelPreparation()
             }
         }
     }
 
     private func cancelPreparation() {
         preparationID = nil
-        isPreparing = false
+        activity.cancelPreparation()
         activeProfileID = nil
         status = "Dictation cancelled"
     }
 
     private func finish() {
         guard isRecording else { return }
-        shouldTranscribe = true
-        isTranscribing = true
         status = "Finishing recording…"
-        stopRecording()
+        stopRecording(shouldTranscribe: true)
     }
 
-    private func stopRecording() {
-        isRecording = false
-        isFinalizing = true
+    private func stopRecording(shouldTranscribe: Bool) {
+        activity.finishRecording(shouldTranscribe: shouldTranscribe)
         captureOutput?.stopRecording()
     }
 
     private func recordingDidFinish(at recordingURL: URL, error: Error?) {
-        let shouldTranscribe = shouldTranscribe
+        let shouldTranscribe = activity.completeRecording()
         let language = recordingLanguage
         let profileID = activeProfileID
         let session = captureSession
@@ -180,8 +175,6 @@ final class DictationService {
         captureOutput = nil
         recordingDelegate = nil
         recordingLanguage = nil
-        self.shouldTranscribe = false
-        isFinalizing = false
         Task.detached { session?.stopRunning() }
 
         guard shouldTranscribe else {
@@ -189,9 +182,9 @@ final class DictationService {
             activeProfileID = nil
             return
         }
-        guard Self.recordingSucceeded(error) else {
+        guard MicrophoneCapture.recordingSucceeded(error) else {
             try? FileManager.default.removeItem(at: recordingURL)
-            isTranscribing = false
+            activity.completeTranscription()
             activeProfileID = nil
             status = "Could not record audio: \(error!.localizedDescription)"
             return
@@ -206,7 +199,7 @@ final class DictationService {
             defer {
                 try? FileManager.default.removeItem(at: recordingURL)
                 try? FileManager.default.removeItem(at: wavURL)
-                isTranscribing = false
+                activity.completeTranscription()
                 activeProfileID = nil
             }
             do {
@@ -217,7 +210,7 @@ final class DictationService {
                 }
                 let artifact = try resolveArtifact(profileID)
                 try await Task.detached {
-                    try Self.convertToWhisperWAV(recordingURL, outputURL: wavURL)
+                    try MicrophoneCapture.convertToWhisperWAV(recordingURL, outputURL: wavURL)
                 }.value
                 let text = try await WhisperRuntime.shared.transcribe(
                     wavURL: wavURL,
@@ -237,191 +230,6 @@ final class DictationService {
         }
     }
 
-    nonisolated private static func prepareCapture() throws -> CaptureSetup {
-        let discovery = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.microphone, .external],
-            mediaType: .audio,
-            position: .unspecified
-        )
-        let savedID = UserDefaults.standard.string(forKey: "workingMicrophoneID")
-        let defaultID = AVCaptureDevice.default(for: .audio)?.uniqueID
-        let devices = discovery.devices
-            .filter { $0.isConnected && !$0.isSuspended }
-            .sorted {
-                devicePriority($0.uniqueID, savedID: savedID, defaultID: defaultID)
-                    < devicePriority($1.uniqueID, savedID: savedID, defaultID: defaultID)
-            }
-
-        assert(
-            isWorkingInput(level: -55) && !isWorkingInput(level: -758),
-            "A live microphone must win over a device producing digital silence"
-        )
-
-        var lastError: Error?
-        var fallbackDevice: AVCaptureDevice?
-        if let savedDevice = devices.first(where: { $0.uniqueID == savedID }) {
-            do {
-                return try configure(savedDevice)
-            } catch {
-                lastError = error
-            }
-        }
-
-        for device in devices {
-            do {
-                let result = try probe(device)
-                if result.works {
-                    return try configure(device)
-                }
-                if fallbackDevice == nil && result.hasSamples {
-                    fallbackDevice = device
-                }
-            } catch {
-                lastError = error
-            }
-        }
-
-        if let fallbackDevice {
-            do {
-                return try configure(fallbackDevice)
-            } catch {
-                lastError = error
-            }
-        }
-
-        if let firstDevice = devices.first {
-            do {
-                return try configure(firstDevice)
-            } catch {
-                lastError = error
-            }
-        }
-        throw lastError ?? MicrophoneError.noWorkingInput
-    }
-
-    nonisolated private static func configure(_ device: AVCaptureDevice) throws -> CaptureSetup {
-        let session = AVCaptureSession()
-        let input = try AVCaptureDeviceInput(device: device)
-        let output = AVCaptureAudioFileOutput()
-        guard session.canAddInput(input), session.canAddOutput(output) else {
-            throw MicrophoneError.configurationFailed
-        }
-        session.addInput(input)
-        session.addOutput(output)
-        session.startRunning()
-        return CaptureSetup(
-            session: session,
-            output: output,
-            deviceID: device.uniqueID,
-            deviceName: device.localizedName
-        )
-    }
-
-    private struct ProbeResult {
-        let works: Bool
-        let hasSamples: Bool
-    }
-
-    nonisolated private static func probe(_ device: AVCaptureDevice) throws -> ProbeResult {
-        let session = AVCaptureSession()
-        let input = try AVCaptureDeviceInput(device: device)
-        let output = AVCaptureAudioDataOutput()
-        let sink = AudioProbeSink()
-        guard session.canAddInput(input), session.canAddOutput(output) else {
-            throw MicrophoneError.configurationFailed
-        }
-        output.setSampleBufferDelegate(
-            sink,
-            queue: DispatchQueue(label: "tk.microphone-probe")
-        )
-        session.addInput(input)
-        session.addOutput(output)
-        session.startRunning()
-        Thread.sleep(forTimeInterval: 0.35)
-        let level = output.connection(with: .audio)?
-            .audioChannels
-            .map(\.peakHoldLevel)
-            .max() ?? -.infinity
-        session.stopRunning()
-        output.setSampleBufferDelegate(nil, queue: nil)
-        let hasSamples = sink.receivedSamples
-        return ProbeResult(
-            works: hasSamples && isWorkingInput(level: level),
-            hasSamples: hasSamples
-        )
-    }
-
-    nonisolated private static func devicePriority(
-        _ deviceID: String,
-        savedID: String?,
-        defaultID: String?
-    ) -> Int {
-        if deviceID == savedID { return 0 }
-        if deviceID == defaultID { return 1 }
-        return 2
-    }
-
-    nonisolated private static func isWorkingInput(level: Float) -> Bool {
-        level > -120
-    }
-
-    nonisolated private static func recordingSucceeded(_ error: Error?) -> Bool {
-        guard let error = error as NSError? else { return true }
-        return error.userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool == true
-    }
-
-    nonisolated private static func convertToWhisperWAV(
-        _ recordingURL: URL,
-        outputURL: URL
-    ) throws {
-        let process = Process()
-        let errors = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
-        process.arguments = [
-            recordingURL.path,
-            outputURL.path,
-            "-f", "WAVE",
-            "-d", "LEI16@16000",
-            "-c", "1",
-        ]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = errors
-        try process.run()
-        let errorData = errors.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            let message = String(data: errorData, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            throw MicrophoneError.conversionFailed(
-                message.flatMap { $0.isEmpty ? nil : $0 }
-                    ?? "afconvert exited with status \(process.terminationStatus)"
-            )
-        }
-    }
-}
-
-private struct CaptureSetup: @unchecked Sendable {
-    let session: AVCaptureSession
-    let output: AVCaptureAudioFileOutput
-    let deviceID: String
-    let deviceName: String
-}
-
-private final class AudioProbeSink: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
-    private let lock = NSLock()
-    private var didReceiveSamples = false
-
-    var receivedSamples: Bool {
-        lock.withLock { didReceiveSamples }
-    }
-
-    func captureOutput(
-        _ output: AVCaptureOutput,
-        didOutput sampleBuffer: CMSampleBuffer,
-        from connection: AVCaptureConnection
-    ) {
-        lock.withLock { didReceiveSamples = true }
-    }
 }
 
 private final class RecordingDelegate: NSObject, AVCaptureFileOutputRecordingDelegate {
@@ -438,22 +246,5 @@ private final class RecordingDelegate: NSObject, AVCaptureFileOutputRecordingDel
         error: Error?
     ) {
         onFinish(outputFileURL, error)
-    }
-}
-
-private enum MicrophoneError: LocalizedError {
-    case configurationFailed
-    case conversionFailed(String)
-    case noWorkingInput
-
-    var errorDescription: String? {
-        switch self {
-        case .configurationFailed:
-            "The microphone could not be configured"
-        case let .conversionFailed(message):
-            message
-        case .noWorkingInput:
-            "No connected microphone is producing audio"
-        }
     }
 }

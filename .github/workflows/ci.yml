@@ -2,14 +2,25 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: macos-14
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - run: swift test
-      - run: bash -n script/build_and_run.sh
-      - run: plutil -lint Assets/tk.entitlements
-      - run: ./script/build_and_run.sh --help | grep -q -- --release
+      - name: Select Xcode 15.4
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+      - name: Test Swift package
+        run: swift test
+      - name: Validate build script
+        run: bash -n script/build_and_run.sh
+      - name: Validate entitlements
+        run: plutil -lint Assets/tk.entitlements
+      - name: Validate release command
+        run: ./script/build_and_run.sh --help | grep -q -- --release

@@ -51,7 +51,10 @@ struct OnboardingView: View {
                 Button("Get Started", action: finish)
                     .buttonStyle(.borderedProminent)
                     .tint(flowAccent)
-                    .disabled(!model.accessibilityGranted || !model.microphoneGranted)
+                    .disabled(!OnboardingReadiness(
+                        accessibilityGranted: model.accessibilityGranted,
+                        microphoneGranted: model.microphoneGranted
+                    ).canGetStarted)
             }
         }
         .padding(32)

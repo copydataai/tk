@@ -99,7 +99,7 @@ final class GlobalHotKeyService {
         return dictationStatus == noErr && readingStatus == noErr
     }
 
-    fileprivate func perform(id: UInt32) {
+    func perform(id: UInt32) {
         switch id {
         case 1: onDictation?()
         case 2: onReadSelection?()

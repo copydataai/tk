@@ -429,14 +429,7 @@ final class MacTextService: NSObject {
     }
 
     private var focusedElement: AXUIElement? {
-        var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(
-            AXUIElementCreateSystemWide(),
-            kAXFocusedUIElementAttribute as CFString,
-            &value
-        )
-        guard result == .success, let value else { return nil }
-        return (value as! AXUIElement)
+        MacAccessibility.focusedElement
     }
 
     private func postCommandKey(_ keyCode: CGKeyCode) throws {
@@ -452,39 +445,7 @@ final class MacTextService: NSObject {
     }
 
     private func restoreFocus(to target: AXUIElement) async throws {
-        var processIdentifier: pid_t = 0
-        guard AXUIElementGetPid(target, &processIdentifier) == .success else { return }
-
-        var windowValue: CFTypeRef?
-        if AXUIElementCopyAttributeValue(
-            target,
-            kAXWindowAttribute as CFString,
-            &windowValue
-        ) == .success,
-           let windowValue {
-            let window = windowValue as! AXUIElement
-            AXUIElementSetAttributeValue(
-                window,
-                kAXMainAttribute as CFString,
-                kCFBooleanTrue
-            )
-            AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-        }
-
-        NSRunningApplication(processIdentifier: processIdentifier)?.activate()
-        AXUIElementSetAttributeValue(
-            target,
-            kAXFocusedAttribute as CFString,
-            kCFBooleanTrue
-        )
-
-        for _ in 0..<20 {
-            if NSWorkspace.shared.frontmostApplication?.processIdentifier == processIdentifier {
-                try await Task.sleep(for: .milliseconds(50))
-                return
-            }
-            try await Task.sleep(for: .milliseconds(25))
-        }
+        try await MacAccessibility.restoreFocus(to: target)
     }
 
     private func acquirePasteboardAccess() async {
@@ -503,38 +464,5 @@ final class MacTextService: NSObject {
             return
         }
         pasteboardWaiters.removeFirst().resume()
-    }
-}
-
-private extension NSPasteboard.PasteboardType {
-    static let tkCopySentinel = Self("com.tk.copy-sentinel")
-}
-
-struct PasteboardSnapshot {
-    let items: [[NSPasteboard.PasteboardType: Data]]
-
-    init(_ pasteboard: NSPasteboard) {
-        items = pasteboard.pasteboardItems?.map { item in
-            Dictionary(uniqueKeysWithValues: item.types.compactMap { type in
-                item.data(forType: type).map { (type, $0) }
-            })
-        } ?? []
-    }
-
-    @discardableResult
-    func restore(to pasteboard: NSPasteboard, ifChangeCountIs expectedChangeCount: Int) -> Bool {
-        guard pasteboard.changeCount == expectedChangeCount else { return false }
-        pasteboard.clearContents()
-        let restoredItems = items.map { values in
-            let item = NSPasteboardItem()
-            for (type, data) in values {
-                item.setData(data, forType: type)
-            }
-            return item
-        }
-        if !restoredItems.isEmpty {
-            pasteboard.writeObjects(restoredItems)
-        }
-        return true
     }
 }

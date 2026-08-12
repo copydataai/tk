@@ -83,7 +83,12 @@ final class SpeechProfileTests: XCTestCase {
 
         XCTAssertEqual(store.selectedDictationID, "dictation.future")
         XCTAssertEqual(store.selectedReadingID, "reading.best-quality")
-        XCTAssertThrowsError(try store.artifact(for: .dictation))
+        XCTAssertThrowsError(try store.artifact(for: .dictation)) { error in
+            XCTAssertEqual(
+                error.localizedDescription,
+                "The saved profile is not available in this version of tk. Choose another profile in Settings."
+            )
+        }
     }
 
     @MainActor
