@@ -20,6 +20,8 @@ actor LocalInferenceSession {
         case audioTooLarge
         case busy
         case helperFailed
+        case launchFailed
+        case cleanupFailed
         case invalidDuration
         case invalidResponse
         case responseTooLarge
@@ -34,6 +36,9 @@ actor LocalInferenceSession {
     private let operationRootURL: URL
     private let environment: [String: String]
     private let limits: Limits
+    private let processExecutableURL: URL
+    private let processGroupProgram: String?
+    private let removeOperationDirectory: @Sendable (URL) throws -> Void
     private var isActive = false
     private(set) var lastReceipt: InferencePerformanceReceipt?
 
@@ -44,7 +49,12 @@ actor LocalInferenceSession {
         operationRootURL: URL = FileManager.default.temporaryDirectory
             .appendingPathComponent("tk-inference", isDirectory: true),
         environment: [String: String] = [:],
-        limits: Limits = .production
+        limits: Limits = .production,
+        processExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/perl"),
+        processGroupProgram: String? = nil,
+        removeOperationDirectory: @escaping @Sendable (URL) throws -> Void = {
+            try FileManager.default.removeItem(at: $0)
+        }
     ) {
         self.executableURL = executableURL
         self.modelURL = modelURL
@@ -52,6 +62,9 @@ actor LocalInferenceSession {
         self.operationRootURL = operationRootURL
         self.environment = environment
         self.limits = limits
+        self.processExecutableURL = processExecutableURL
+        self.processGroupProgram = processGroupProgram
+        self.removeOperationDirectory = removeOperationDirectory
     }
 
     func transcribe(
@@ -91,13 +104,12 @@ actor LocalInferenceSession {
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
-        defer { try? FileManager.default.removeItem(at: operationURL) }
         let outputBaseURL = operationURL.appendingPathComponent("transcript")
         let outputURL = outputBaseURL.appendingPathExtension("txt")
         let processGroupURL = operationURL.appendingPathComponent("process-group")
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+        process.executableURL = processExecutableURL
         let helperArguments = [
             "--model", modelURL.path,
             "--file", audioURL.standardizedFileURL.path,
@@ -110,10 +122,11 @@ actor LocalInferenceSession {
             "--output-txt",
             "--output-file", outputBaseURL.path,
         ]
+        let defaultProcessGroupProgram = "my $f=shift; my $p=fork(); defined $p or die qq(fork failed); if($p){waitpid($p,0); my $s=$?&127; kill($s,$$) if $s; exit($?>>8)} POSIX::setsid()>=0 or die qq(setsid failed); open(my $h,qq(>),$f) or die qq(handshake failed); print $h $$; close $h; exec {$ARGV[0]} @ARGV or die qq(exec failed)"
         process.arguments = [
             "-MPOSIX",
             "-e",
-            "my $f=shift; my $p=fork(); defined $p or die qq(fork failed); if($p){waitpid($p,0); exit($?>>8)} POSIX::setsid()>=0 or die qq(setsid failed); open(my $h,qq(>),$f) or die qq(handshake failed); print $h $$; close $h; exec {$ARGV[0]} @ARGV or die qq(exec failed)",
+            processGroupProgram ?? defaultProcessGroupProgram,
             processGroupURL.path,
             executableURL.path,
         ] + helperArguments
@@ -125,52 +138,105 @@ actor LocalInferenceSession {
         process.standardError = FileHandle.nullDevice
 
         let startedAt = ContinuousClock.now
-        try process.run()
-        let startupMilliseconds = Int(startedAt.duration(to: .now).inferenceMilliseconds.rounded())
+        var startupMilliseconds = 0
+        var inferenceStartedAt: ContinuousClock.Instant?
+        var termination: InferencePerformanceReceipt.Termination = .launchFailed
+        var responseBytes = 0
+        var primaryError: Swift.Error?
         var processGroup: pid_t?
-        for _ in 0..<40 where process.isRunning && processGroup == nil {
-            if let value = try? String(contentsOf: processGroupURL, encoding: .utf8),
-               let identifier = pid_t(value) {
-                processGroup = identifier
-                break
-            }
-            try? await Task.sleep(for: .milliseconds(5))
-        }
-        guard process.isRunning,
-              let processGroup,
-              getpgid(processGroup) == processGroup else {
-            process.terminate()
-            process.waitUntilExit()
-            throw Error.processGroupUnavailable
-        }
-        let inferenceStartedAt = ContinuousClock.now
-        do {
-            try await waitForExit(process)
-        } catch {
-            terminate(process, processGroup: processGroup)
-            throw error
-        }
-        guard process.terminationStatus == 0 else { throw Error.helperFailed }
+        var resultText: String?
 
-        let responseValues = try outputURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
-        guard responseValues.isRegularFile == true, let responseSize = responseValues.fileSize else {
-            throw Error.invalidResponse
+        do {
+            do {
+                try process.run()
+            } catch {
+                throw Error.launchFailed
+            }
+            startupMilliseconds = Int(startedAt.duration(to: .now).inferenceMilliseconds.rounded())
+            for _ in 0..<40 where process.isRunning && processGroup == nil {
+                if let value = try? String(contentsOf: processGroupURL, encoding: .utf8),
+                   let identifier = pid_t(value) {
+                    processGroup = identifier
+                    break
+                }
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+            guard process.isRunning,
+                  let processGroup,
+                  getpgid(processGroup) == processGroup else {
+                if process.isRunning { process.terminate() }
+                process.waitUntilExit()
+                throw Error.processGroupUnavailable
+            }
+            inferenceStartedAt = .now
+            do {
+                try await waitForExit(process)
+            } catch {
+                terminate(process, processGroup: processGroup)
+                throw error
+            }
+            guard process.terminationReason == .exit else { throw Error.helperFailed }
+            guard process.terminationStatus == 0 else { throw Error.helperFailed }
+
+            guard let responseValues = try? outputURL.resourceValues(
+                forKeys: [.fileSizeKey, .isRegularFileKey]
+            ), responseValues.isRegularFile == true, let responseSize = responseValues.fileSize else {
+                throw Error.invalidResponse
+            }
+            responseBytes = responseSize
+            guard responseSize <= limits.maxResponseBytes else { throw Error.responseTooLarge }
+            let data = try Data(contentsOf: outputURL, options: .mappedIfSafe)
+            guard let text = String(data: data, encoding: .utf8) else { throw Error.invalidResponse }
+            responseBytes = data.count
+            resultText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            termination = .exited
+        } catch {
+            primaryError = error
+            if error is CancellationError {
+                termination = .cancelled
+            } else if error as? Error == .timedOut {
+                termination = .timedOut
+            } else if error as? Error == .launchFailed {
+                termination = .launchFailed
+            } else if error as? Error == .processGroupUnavailable {
+                termination = .processGroupFailed
+            } else if error as? Error == .invalidResponse {
+                termination = .invalidResponse
+            } else if error as? Error == .responseTooLarge {
+                termination = .responseTooLarge
+            } else if process.terminationReason == .uncaughtSignal {
+                termination = .signalled
+            } else {
+                termination = .nonzeroExit
+            }
         }
-        guard responseSize <= limits.maxResponseBytes else { throw Error.responseTooLarge }
-        let data = try Data(contentsOf: outputURL, options: .mappedIfSafe)
-        guard let text = String(data: data, encoding: .utf8) else { throw Error.invalidResponse }
+
+        var cleanupSucceeded = true
+        do {
+            try removeOperationDirectory(operationURL)
+        } catch {
+            cleanupSucceeded = false
+            if primaryError == nil {
+                primaryError = Error.cleanupFailed
+                termination = .cleanupFailed
+            }
+        }
+        let inferenceMilliseconds = inferenceStartedAt.map {
+            Int($0.duration(to: .now).inferenceMilliseconds.rounded())
+        } ?? 0
         lastReceipt = InferencePerformanceReceipt(
             operationID: operationID,
             profileID: profileID,
             coldStart: coldStart,
             startupMilliseconds: startupMilliseconds,
-            inferenceMilliseconds: Int(inferenceStartedAt.duration(to: .now).inferenceMilliseconds.rounded()),
+            inferenceMilliseconds: inferenceMilliseconds,
             peakMemoryBytes: nil,
-            termination: .exited,
-            cleanupSucceeded: true,
-            responseBytes: data.count
+            termination: termination,
+            cleanupSucceeded: cleanupSucceeded,
+            responseBytes: responseBytes
         )
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let primaryError { throw primaryError }
+        return resultText ?? ""
     }
 
     private func waitForExit(_ process: Process) async throws {

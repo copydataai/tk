@@ -134,7 +134,10 @@ struct InferenceAdmissionPolicy: Equatable, Sendable {
 }
 
 struct InferencePerformanceReceipt: Codable, Equatable, Sendable {
-    enum Termination: String, Codable, Sendable { case exited, timedOut, cancelled, signalled, launchFailed }
+    enum Termination: String, Codable, Sendable {
+        case exited, timedOut, cancelled, signalled, nonzeroExit, launchFailed
+        case processGroupFailed, invalidResponse, responseTooLarge, cleanupFailed
+    }
 
     let operationID: UUID
     let profileID: String

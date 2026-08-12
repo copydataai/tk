@@ -32,7 +32,8 @@ final class LocalInferenceSessionTests: XCTestCase {
         """)
         defer { fixture.remove() }
 
-        let result = try await fixture.session().transcribe(
+        let session = fixture.session()
+        let result = try await session.transcribe(
             audioURL: fixture.audioURL,
             declaredDuration: 1,
             language: "en"
@@ -43,6 +44,95 @@ final class LocalInferenceSessionTests: XCTestCase {
         XCTAssertFalse(arguments.contains("--host"))
         XCTAssertFalse(arguments.contains("--port"))
         XCTAssertFalse(arguments.localizedCaseInsensitiveContains("token"))
+        let receipt = await session.lastReceipt
+        XCTAssertEqual(receipt?.termination, .exited)
+        XCTAssertEqual(receipt?.cleanupSucceeded, true)
+        XCTAssertEqual(receipt?.responseBytes, 18)
+    }
+
+    func testRecordsNonzeroExitReceipt() async throws {
+        let fixture = try Fixture(script: "exit 7\n")
+        defer { fixture.remove() }
+        let session = fixture.session()
+
+        await assertFailureReceipt(fixture: fixture, session: session, expectedError: .helperFailed,
+                                   termination: .nonzeroExit)
+    }
+
+    func testRecordsSignalReceipt() async throws {
+        let fixture = try Fixture(script: "kill -TERM $$\n")
+        defer { fixture.remove() }
+        let session = fixture.session()
+
+        await assertFailureReceipt(fixture: fixture, session: session, expectedError: .helperFailed,
+                                   termination: .signalled)
+    }
+
+    func testRecordsLaunchFailureReceipt() async throws {
+        let fixture = try Fixture(script: "exit 0\n")
+        defer { fixture.remove() }
+        let session = fixture.session(processExecutableURL: fixture.rootURL.appendingPathComponent("missing"))
+
+        await assertFailureReceipt(fixture: fixture, session: session, expectedError: .launchFailed,
+                                   termination: .launchFailed)
+    }
+
+    func testRecordsProcessGroupEstablishmentFailureReceipt() async throws {
+        let fixture = try Fixture(script: "exit 0\n")
+        defer { fixture.remove() }
+        let session = fixture.session(processGroupProgram: "exit 0")
+
+        await assertFailureReceipt(
+            fixture: fixture, session: session,
+            expectedError: .processGroupUnavailable,
+            termination: .processGroupFailed
+        )
+    }
+
+    func testRecordsMalformedResponseReceipt() async throws {
+        let fixture = try Fixture(script: "true\n")
+        defer { fixture.remove() }
+        let session = fixture.session()
+
+        await assertFailureReceipt(fixture: fixture, session: session, expectedError: .invalidResponse,
+                                   termination: .invalidResponse)
+    }
+
+    func testRecordsMalformedUTF8ResponseReceipt() async throws {
+        let fixture = try Fixture(script: """
+        output=""
+        while [[ $# -gt 0 ]]; do
+          if [[ "$1" == "--output-file" ]]; then output="$2"; shift 2; else shift; fi
+        done
+        printf '\\xff' >"$output.txt"
+        """)
+        defer { fixture.remove() }
+        let session = fixture.session()
+
+        await assertFailureReceipt(fixture: fixture, session: session, expectedError: .invalidResponse,
+                                   termination: .invalidResponse)
+    }
+
+    func testRecordsCleanupFailureWithoutReplacingPrimaryError() async throws {
+        let fixture = try Fixture(script: "exit 9\n")
+        defer { fixture.remove() }
+        let session = fixture.session(removeOperationDirectory: { _ in throw CleanupFailure.denied })
+
+        await assertFailureReceipt(
+            fixture: fixture, session: session,
+            expectedError: .helperFailed,
+            termination: .nonzeroExit,
+            cleanupSucceeded: false
+        )
+    }
+
+    func testRecordsCleanupFailureAfterSuccessfulHelper() async throws {
+        let fixture = try Fixture(script: Fixture.successScript)
+        defer { fixture.remove() }
+        let session = fixture.session(removeOperationDirectory: { _ in throw CleanupFailure.denied })
+
+        await assertFailureReceipt(fixture: fixture, session: session, expectedError: .cleanupFailed,
+                                   termination: .cleanupFailed, cleanupSucceeded: false)
     }
 
     func testRejectsInvalidDeclaredDurationBeforeLaunchingHelper() async throws {
@@ -113,6 +203,9 @@ final class LocalInferenceSessionTests: XCTestCase {
             XCTAssertTrue(error is CancellationError)
         }
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.workURL.path), [])
+        let receipt = await session.lastReceipt
+        XCTAssertEqual(receipt?.termination, .cancelled)
+        XCTAssertEqual(receipt?.cleanupSucceeded, true)
     }
 
     func testTimeoutKillsForkedDescendantInDedicatedProcessGroup() async throws {
@@ -133,6 +226,9 @@ final class LocalInferenceSessionTests: XCTestCase {
         let pid = Int32((try String(contentsOf: fixture.markerURL, encoding: .utf8))
             .trimmingCharacters(in: .whitespacesAndNewlines))!
         XCTAssertEqual(kill(pid, 0), -1)
+        let receipt = await session.lastReceipt
+        XCTAssertEqual(receipt?.termination, .timedOut)
+        XCTAssertEqual(receipt?.cleanupSucceeded, true)
     }
 
     func testRejectsOversizeHelperResponse() async throws {
@@ -145,8 +241,9 @@ final class LocalInferenceSessionTests: XCTestCase {
         """)
         defer { fixture.remove() }
 
+        let session = fixture.session(maxResponseBytes: 8)
         await XCTAssertThrowsErrorAsync {
-            try await fixture.session(maxResponseBytes: 8).transcribe(
+            try await session.transcribe(
                 audioURL: fixture.audioURL,
                 declaredDuration: 1,
                 language: "en"
@@ -154,6 +251,9 @@ final class LocalInferenceSessionTests: XCTestCase {
         } verify: { error in
             XCTAssertEqual(error as? LocalInferenceSession.Error, .responseTooLarge)
         }
+        let receipt = await session.lastReceipt
+        XCTAssertEqual(receipt?.termination, .responseTooLarge)
+        XCTAssertEqual(receipt?.responseBytes, 9)
     }
 
     func testTimeoutTerminatesHelperAndCleansState() async throws {
@@ -171,9 +271,38 @@ final class LocalInferenceSessionTests: XCTestCase {
         }
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.workURL.path), [])
     }
+
+    private func assertFailureReceipt(
+        fixture: Fixture,
+        session: LocalInferenceSession,
+        expectedError: LocalInferenceSession.Error,
+        termination: InferencePerformanceReceipt.Termination,
+        cleanupSucceeded: Bool = true
+    ) async {
+        await XCTAssertThrowsErrorAsync {
+            try await session.transcribe(audioURL: fixture.audioURL, declaredDuration: 1, language: "en")
+        } verify: { error in
+            XCTAssertEqual(error as? LocalInferenceSession.Error, expectedError)
+        }
+        let receipt = await session.lastReceipt
+        XCTAssertEqual(receipt?.termination, termination)
+        XCTAssertEqual(receipt?.cleanupSucceeded, cleanupSucceeded)
+        XCTAssertNotNil(receipt?.startupMilliseconds)
+        XCTAssertNotNil(receipt?.inferenceMilliseconds)
+    }
 }
 
+private enum CleanupFailure: Error { case denied }
+
 private struct Fixture {
+    static let successScript = """
+    output=""
+    while [[ $# -gt 0 ]]; do
+      if [[ "$1" == "--output-file" ]]; then output="$2"; shift 2; else shift; fi
+    done
+    printf 'ok\n' >"$output.txt"
+    """
+
     let rootURL: URL
     let executableURL: URL
     let modelURL: URL
@@ -209,7 +338,12 @@ private struct Fixture {
     func session(
         maxAudioBytes: Int = 1024,
         maxResponseBytes: Int = 1024,
-        timeout: TimeInterval = 5
+        timeout: TimeInterval = 5,
+        processExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/perl"),
+        processGroupProgram: String? = nil,
+        removeOperationDirectory: @escaping @Sendable (URL) throws -> Void = {
+            try FileManager.default.removeItem(at: $0)
+        }
     ) -> LocalInferenceSession {
         LocalInferenceSession(
             executableURL: executableURL,
@@ -225,7 +359,10 @@ private struct Fixture {
                 maxDuration: 10,
                 maxResponseBytes: maxResponseBytes,
                 timeout: timeout
-            )
+            ),
+            processExecutableURL: processExecutableURL,
+            processGroupProgram: processGroupProgram,
+            removeOperationDirectory: removeOperationDirectory
         )
     }
 
