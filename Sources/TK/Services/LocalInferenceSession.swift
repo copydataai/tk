@@ -112,6 +112,7 @@ actor LocalInferenceSession {
         process.standardError = FileHandle.nullDevice
 
         try process.run()
+        setpgid(process.processIdentifier, process.processIdentifier)
         do {
             try await waitForExit(process)
         } catch {
@@ -141,6 +142,7 @@ actor LocalInferenceSession {
 
     private func terminate(_ process: Process) {
         guard process.isRunning else { return }
+        kill(-process.processIdentifier, SIGKILL)
         kill(process.processIdentifier, SIGKILL)
         process.waitUntilExit()
     }
