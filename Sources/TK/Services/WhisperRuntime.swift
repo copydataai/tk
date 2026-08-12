@@ -183,7 +183,7 @@ actor WhisperRuntime {
 
     private func registerTerminationCleanup(for process: Process) {
         terminationObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.willTerminateNotification,
+            forName: Notification.Name("NSApplicationWillTerminateNotification"),
             object: nil,
             queue: nil
         ) { [weak process] _ in
