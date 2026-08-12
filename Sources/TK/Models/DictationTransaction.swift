@@ -1,5 +1,24 @@
 import Foundation
 
+struct PendingDictation: Codable, Equatable, Sendable {
+    enum Trust: String, Codable, Sendable {
+        case locallyRecognized
+    }
+
+    enum CommitState: String, Codable, Sendable {
+        case ready
+        case inserting
+        case insertionFailed
+    }
+
+    let operationID: UUID
+    let text: String
+    let createdAt: Date
+    let profileID: String
+    let trust: Trust
+    var commitState: CommitState
+}
+
 struct DictationTransaction: Equatable, Sendable {
     enum State: String, CaseIterable, Sendable {
         case preparing

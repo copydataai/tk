@@ -4,6 +4,74 @@ import XCTest
 
 final class CoreWorkflowTests: XCTestCase {
     @MainActor
+    func testInsertionFailureAndRelaunchRecoverExactlyThePendingText() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("pending-dictation.json")
+        let store = PendingDictationStore(fileURL: fileURL)
+        let operationID = UUID()
+        let service = DictationService(pendingStore: store)
+        service.acceptRecognizedCandidate(
+            operationID: operationID,
+            text: "words that must survive",
+            profileID: "profile",
+            createdAt: Date(timeIntervalSince1970: 42)
+        )
+
+        do {
+            try await service.commitCandidate(operationID: operationID) { _ in
+                throw MacTextError.noFocusedControl
+            }
+            XCTFail("Expected insertion failure")
+        } catch {
+            guard case MacTextError.noFocusedControl = error else {
+                return XCTFail("Expected noFocusedControl, got \(error)")
+            }
+        }
+
+        let relaunched = DictationService(
+            pendingStore: PendingDictationStore(fileURL: fileURL)
+        )
+        XCTAssertEqual(relaunched.pendingResult?.text, "words that must survive")
+        XCTAssertEqual(relaunched.pendingResult?.commitState, .insertionFailed)
+    }
+
+    @MainActor
+    func testSuccessfulDispositionAndExplicitDiscardRemovePendingArtifact() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = PendingDictationStore(
+            fileURL: directory.appendingPathComponent("pending-dictation.json")
+        )
+        let service = DictationService(pendingStore: store)
+        let firstID = UUID()
+        service.acceptRecognizedCandidate(
+            operationID: firstID,
+            text: "insert me",
+            profileID: "profile"
+        )
+
+        try await service.commitCandidate(operationID: firstID) { text in
+            XCTAssertEqual(text, "insert me")
+            XCTAssertEqual(try store.load()?.commitState, .inserting)
+        }
+        XCTAssertNil(service.pendingResult)
+
+        let secondID = UUID()
+        service.acceptRecognizedCandidate(
+            operationID: secondID,
+            text: "discard me",
+            profileID: "profile"
+        )
+        try service.persistCandidate(operationID: secondID)
+        try service.discardPendingResult()
+        XCTAssertNil(service.pendingResult)
+        XCTAssertNil(try store.load())
+    }
+
+    @MainActor
     func testDictationWithoutAnAvailableProfileExplainsHowToRecover() {
         let service = DictationService()
 

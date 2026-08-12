@@ -13,6 +13,9 @@ final class DictationService {
     private(set) var status = "Press the shortcut to dictate"
     private(set) var activeProfileID: String?
     private(set) var lastStartMilliseconds: Double?
+    private let pendingStore: PendingDictationStore
+    private(set) var pendingResult: PendingDictation?
+    private(set) var pendingStoreError: Error?
 
     var onTranscriptReady: ((String) -> Void)?
     var onCommitCandidate: ((UUID, String) -> Void)?
@@ -26,6 +29,26 @@ final class DictationService {
     var isFinalizing: Bool { activity.isFinalizing }
     @ObservationIgnored private var preparationID: UUID?
     @ObservationIgnored private var preparationStartedAt: ContinuousClock.Instant?
+
+    init(pendingStore: PendingDictationStore? = nil) {
+        let resolvedStore: PendingDictationStore
+        do {
+            resolvedStore = try pendingStore ?? PendingDictationStore.applicationSupport()
+        } catch {
+            resolvedStore = PendingDictationStore(
+                fileURL: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("tk-unavailable-pending-dictation")
+            )
+            pendingStoreError = error
+        }
+        self.pendingStore = resolvedStore
+        guard pendingStoreError == nil else { return }
+        do {
+            pendingResult = try resolvedStore.load()
+        } catch {
+            pendingStoreError = error
+        }
+    }
 
     func toggle(language: String? = nil, artifact: SpeechArtifact? = nil) {
         guard !isTranscribing else {
@@ -291,6 +314,76 @@ final class DictationService {
     func failCommit(operationID: UUID, message: String) {
         guard transaction?.operationID == operationID else { return }
         fail(kind: .insertion, message: message, recoverable: true)
+    }
+
+    func acceptRecognizedCandidate(
+        operationID: UUID,
+        text: String,
+        profileID: String,
+        createdAt: Date = Date()
+    ) {
+        var restored = DictationTransaction(
+            operationID: operationID,
+            profileID: profileID,
+            startedAt: createdAt
+        )
+        try? restored.transition(to: .recording, at: createdAt)
+        try? restored.transition(to: .finalizing, at: createdAt)
+        try? restored.transition(to: .recognizing, at: createdAt)
+        try? restored.setCandidateText(text, at: createdAt)
+        transaction = restored
+        transcript = text
+    }
+
+    func persistCandidate(operationID: UUID) throws {
+        guard let transaction,
+              transaction.operationID == operationID,
+              let text = transaction.candidateText else { return }
+        let pending = PendingDictation(
+            operationID: operationID,
+            text: text,
+            createdAt: transaction.startedAt,
+            profileID: transaction.profileID,
+            trust: .locallyRecognized,
+            commitState: .ready
+        )
+        try pendingStore.save(pending)
+        pendingResult = pending
+        pendingStoreError = nil
+    }
+
+    func commitCandidate(
+        operationID: UUID,
+        disposition: (String) async throws -> Void
+    ) async throws {
+        try persistCandidate(operationID: operationID)
+        guard var pending = pendingResult, pending.operationID == operationID else { return }
+        pending.commitState = .inserting
+        try pendingStore.save(pending)
+        pendingResult = pending
+        beginCommit(operationID: operationID)
+        do {
+            try await disposition(pending.text)
+            try pendingStore.discard()
+            pendingResult = nil
+            completeCommit(operationID: operationID)
+        } catch {
+            pending.commitState = .insertionFailed
+            do {
+                try pendingStore.save(pending)
+                pendingResult = pending
+            } catch {
+                pendingStoreError = error
+            }
+            failCommit(operationID: operationID, message: error.localizedDescription)
+            throw error
+        }
+    }
+
+    func discardPendingResult() throws {
+        try pendingStore.discard()
+        pendingResult = nil
+        pendingStoreError = nil
     }
 
     private func transition(to state: DictationTransaction.State) {

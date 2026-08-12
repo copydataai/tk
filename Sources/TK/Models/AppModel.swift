@@ -113,6 +113,10 @@ final class AppModel {
         refreshPermissions()
         if let transcriptStoreError {
             statusMessage = "History unavailable: \(transcriptStoreError)"
+        } else if let pendingStoreError = dictation.pendingStoreError {
+            statusMessage = pendingStoreError.localizedDescription
+        } else if dictation.pendingResult != nil {
+            statusMessage = "A pending transcription was recovered"
         }
         performanceSnapshot = .capture(launchStartedAt: launchStartedAt)
     }
@@ -344,28 +348,27 @@ final class AppModel {
     }
 
     private func saveAndInsert(_ text: String, operationID: UUID) async {
-        dictation.beginCommit(operationID: operationID)
         do {
-            guard let transcriptStore else {
-                throw TranscriptStoreError.sqlite(
-                    transcriptStoreError ?? "The database is unavailable."
-                )
+            try await dictation.commitCandidate(operationID: operationID) { [weak self] text in
+                guard let self else { throw CancellationError() }
+                do {
+                    guard let transcriptStore else {
+                        throw TranscriptStoreError.sqlite(
+                            transcriptStoreError ?? "The database is unavailable."
+                        )
+                    }
+                    try transcriptStore.insert(text)
+                    transcripts = try transcriptStore.recent(limit: historyRetentionLimit)
+                    transcriptStoreError = nil
+                } catch {
+                    transcriptStoreError = error.localizedDescription
+                }
+                try await macText.insert(text)
             }
-            try transcriptStore.insert(text)
-            transcripts = try transcriptStore.recent(limit: historyRetentionLimit)
-            transcriptStoreError = nil
-        } catch {
-            transcriptStoreError = error.localizedDescription
-        }
-
-        do {
-            try await macText.insert(text)
-            dictation.completeCommit(operationID: operationID)
             statusMessage = transcriptStoreError.map {
                 "Inserted, but history could not be saved: \($0)"
             } ?? "Inserted transcription"
         } catch {
-            dictation.failCommit(operationID: operationID, message: error.localizedDescription)
             statusMessage = transcriptStoreError.map {
                 "History could not be saved: \($0). Insertion also failed: \(error.localizedDescription)"
             } ?? error.localizedDescription
