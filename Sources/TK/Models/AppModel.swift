@@ -12,6 +12,7 @@ final class AppModel {
 
     private let hotKeys = GlobalHotKeyService()
     private let macText = MacTextService()
+    private let continuityMonitor = SystemContinuityMonitor()
     private var transcriptStore: TranscriptStore?
     private var transcriptStoreError: String?
 
@@ -109,6 +110,16 @@ final class AppModel {
             guard let self else { throw CancellationError() }
             return try self.profiles.artifact(forID: profileID)
         }
+        dictation.onContinuityNotification = { [weak self] notification, message in
+            self?.statusMessage = "\(notification.title): \(message)"
+        }
+        continuityMonitor.onEvent = { [weak self] event in
+            self?.dictation.handleContinuityEvent(event)
+            if ContinuityPolicy.requiresDeviceReprobe(after: event) {
+                self?.refreshPermissions()
+            }
+        }
+        continuityMonitor.start()
         hotKeys.onDictation = { [weak self] in self?.toggleDictation() }
         hotKeys.onReadSelection = { [weak self] in self?.readSelection() }
         hotKeys.start()

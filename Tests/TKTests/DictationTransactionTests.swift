@@ -82,6 +82,25 @@ final class DictationTransactionTests: XCTestCase {
         XCTAssertEqual(transaction.audioState, .available(audioURL))
     }
 
+    func testContinuityInterruptionIsRecoverableFromEveryPreResultPhase() throws {
+        for phase in [
+            DictationTransaction.State.preparing,
+            .recording,
+            .finalizing,
+            .recognizing
+        ] {
+            var transaction = DictationTransaction(profileID: "profile")
+            for nextState in path(after: .preparing, through: phase) {
+                try transaction.transition(to: nextState)
+            }
+
+            try transaction.interruptRecoverably(message: "System interruption")
+
+            XCTAssertEqual(transaction.state, .interruptedRecoverable)
+            XCTAssertEqual(transaction.failure?.kind, .interruption)
+        }
+    }
+
     private func resultReadyTransaction(candidateText: String) throws -> DictationTransaction {
         var transaction = DictationTransaction(profileID: "profile")
         try transaction.transition(to: .recording)

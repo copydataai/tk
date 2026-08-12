@@ -81,6 +81,20 @@ Repeat the following in every target app listed in the compatibility record:
 - [ ] Quit from the menu bar and confirm `tk`, `whisper-cli`, and `babylon` processes exit.
 - [ ] Relaunch after logout/login or a reboot and repeat one dictation and one read-aloud operation.
 
+## Continuity interruptions
+
+The app maps continuity outcomes to these user-facing notifications: `interruptedRecoverable` is **Dictation interrupted**, `degraded` is **Dictation degraded**, and `resourceBlocked` is **Dictation blocked**. A sleep interruption during recording must never be described as a completed recording or transcription.
+
+- [ ] Start recording with the built-in microphone, sleep the Mac, wake it, and confirm the transaction ends as `interruptedRecoverable`, no completion is claimed, partial capture is cleaned up, devices are reprobed, and the next attempt has a new operation identifier.
+- [ ] Repeat sleep/wake while local recognition is active. Confirm the stale helper exits. If the operation audio still exists, confirm the app reports that it was preserved; otherwise confirm loss is explicit rather than reporting preservation.
+- [ ] Record with a USB microphone, disconnect that exact device, and confirm an explicit recoverable interruption, complete capture cleanup, and no automatic switch to the built-in microphone.
+- [ ] Connect another microphone during an active recording and confirm the active input does not change. Start a new transaction to select or probe a different input.
+- [ ] Exercise warning-level thermal or memory pressure and confirm the current recognition is reported as degraded but continues without changing the selected Dictation profile.
+- [ ] Exercise critical thermal or memory pressure and confirm new or active work is reported as `resourceBlocked`; recognition audio is preserved when available, or loss is reported explicitly. Confirm no automatic Speech profile downgrade.
+- [ ] Repeat the device gates with built-in, USB, and Bluetooth microphones and attach the result. These are physical release gates and are not satisfied by the software test suite.
+
+Software coverage for policy, transaction state, device identity, wake reprobe requirements, resource outcomes, and notification mapping is provided by `SystemContinuityTests` and `DictationTransactionTests`. Software tests do not prove physical sleep/wake, AV device routing, USB behavior, Bluetooth behavior, or actual pressure delivery.
+
 ### Local inference boundary
 
 The pinned whisper.cpp server does not provide narrow, distributable request authentication or request-size enforcement. tk therefore packages `whisper-cli` and launches a fresh helper for each dictation instead of exposing a reusable HTTP listener. Input size and declared duration are checked before launch. Only one operation is admitted at a time. Runtime, response size, and operation lifetime are bounded, and cancellation kills the helper and removes its private output directory. Standard output and standard error are discarded so helper diagnostics cannot disclose request authority. There is no reusable token or process authority after exit.
@@ -90,7 +104,7 @@ The pinned whisper.cpp server does not provide narrow, distributable request aut
 - [ ] Confirm timeout and cancellation terminate the helper and remove its operation directory.
 - [ ] Confirm the packaged app contains `whisper-cli` and does not contain `whisper-server`.
 
-Dictation audio is separately bounded to 15 minutes and 64 MiB. Each operation owns a private directory containing its CAF recording, converted speech WAV, and a content-free ownership marker. Normal completion, failure, and cancellation remove the directory. Launch cleanup considers only direct child directories with valid tk ownership markers, retains fresh or verified-live operations, and reports only identifiers and counts. This is application-scoped cleanup and makes no claim about filesystem snapshots, backups, swap, or storage-device remanence.
+Dictation audio is separately bounded to 15 minutes and 64 MiB. Each operation owns a private directory containing its CAF recording, converted speech WAV, and a content-free ownership marker. Normal completion, ordinary failure, and cancellation remove the directory. A continuity interruption during recognition can retain only that operation's audio when the file still exists; the app reports explicit loss otherwise. Launch cleanup considers only direct child directories with valid tk ownership markers, retains fresh or verified-live operations, and reports only identifiers and counts. This is application-scoped cleanup and makes no claim about filesystem snapshots, backups, swap, or storage-device remanence.
 
 This boundary protects against unrelated local processes reaching an unauthenticated resident inference listener. Compromise of the same user account or the full system remains out of scope because such an attacker can inspect or control tk's files and processes directly.
 

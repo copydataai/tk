@@ -86,6 +86,20 @@ enum MicrophoneCapture {
         level > -120
     }
 
+    static func isCapturedDeviceDisconnect(
+        disconnectedDeviceID: String,
+        capturedDeviceID: String?
+    ) -> Bool {
+        disconnectedDeviceID == capturedDeviceID
+    }
+
+    static func shouldRetainOperationAudio(
+        recordingURL: URL,
+        preservedAudioURL: URL?
+    ) -> Bool {
+        recordingURL.standardizedFileURL == preservedAudioURL?.standardizedFileURL
+    }
+
     static func recordingSucceeded(_ error: Error?) -> Bool {
         guard !recordingLimitExceeded(error) else { return false }
         guard let error = error as NSError? else { return true }

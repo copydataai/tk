@@ -18,15 +18,20 @@ final class DictationService {
     private(set) var pendingResult: PendingDictation?
     private(set) var pendingStoreError: Error?
     private(set) var artifactCleanupReport: OperationArtifactCleanupReport
+    private(set) var preservedAudioURL: URL?
+    private(set) var lastContinuityNotification: ContinuityNotification?
 
     var onTranscriptReady: ((String) -> Void)?
     var onCommitCandidate: ((UUID, String) -> Void)?
     var resolveArtifact: ((String) throws -> SpeechArtifact)?
+    var onContinuityNotification: ((ContinuityNotification, String) -> Void)?
 
     @ObservationIgnored private var captureSession: AVCaptureSession?
     @ObservationIgnored private var captureOutput: AVCaptureAudioFileOutput?
     @ObservationIgnored private var recordingDelegate: RecordingDelegate?
     @ObservationIgnored private var recordingLanguage: String?
+    @ObservationIgnored private var capturedDeviceID: String?
+    @ObservationIgnored private var recognitionTask: Task<Void, Never>?
     var isPreparing: Bool { activity.isPreparing }
     var isFinalizing: Bool { activity.isFinalizing }
     @ObservationIgnored private var preparationID: UUID?
@@ -174,6 +179,7 @@ final class DictationService {
 
                 captureSession = setup.session
                 captureOutput = setup.output
+                capturedDeviceID = setup.deviceID
                 recordingDelegate = delegate
                 recordingLanguage = language
                 activeProfileID = profileID
@@ -234,6 +240,7 @@ final class DictationService {
         let session = captureSession
         captureSession = nil
         captureOutput = nil
+        capturedDeviceID = nil
         recordingDelegate = nil
         recordingLanguage = nil
         Task.detached { session?.stopRunning() }
@@ -262,13 +269,19 @@ final class DictationService {
         transition(to: .recognizing)
         let operationID = transaction?.operationID
 
-        Task {
+        recognitionTask = Task {
             guard let operationID else { return }
             let wavURL = recordingURL.deletingLastPathComponent().appendingPathComponent("speech.wav")
             defer {
-                artifactCleaner.removeOperation(operationID: operationID)
-                transaction?.setAudioState(.discarded)
+                if !MicrophoneCapture.shouldRetainOperationAudio(
+                    recordingURL: recordingURL,
+                    preservedAudioURL: preservedAudioURL
+                ) {
+                    artifactCleaner.removeOperation(operationID: operationID)
+                    transaction?.setAudioState(.discarded)
+                }
                 activeProfileID = nil
+                recognitionTask = nil
             }
             do {
                 guard transaction?.operationID == operationID,
@@ -299,6 +312,7 @@ final class DictationService {
                     onCommitCandidate?(operationID, text)
                     status = "Transcription ready"
                 }
+            } catch is CancellationError {
             } catch {
                 if transaction?.operationID == operationID,
                    transaction?.state == .recognizing {
@@ -307,6 +321,83 @@ final class DictationService {
                 status = "Dictation failed: \(error.localizedDescription)"
             }
         }
+    }
+
+    func handleContinuityEvent(_ event: SystemContinuityEvent) {
+        if ContinuityPolicy.requiresDeviceReprobe(after: event) {
+            Task { await WhisperRuntime.shared.invalidate() }
+        }
+        let decision = ContinuityPolicy.decision(
+            for: event,
+            transactionState: transaction?.state,
+            capturedDeviceID: capturedDeviceID
+        )
+        switch decision {
+        case .continueCurrentOperation:
+            return
+        case .continueDegraded(let message):
+            status = message
+            notify(.degraded, message: message)
+        case .interruptRecoverably(let message, let preserveAudio):
+            let reportedMessage = interruptContinuity(message: message, preserveAudio: preserveAudio)
+            notify(.interruptedRecoverable, message: reportedMessage)
+        case .resourceBlocked(let message, let preserveAudio):
+            let reportedMessage = interruptContinuity(
+                message: message,
+                preserveAudio: preserveAudio,
+                resourceBlocked: true
+            )
+            notify(.resourceBlocked, message: reportedMessage)
+        }
+    }
+
+    private func interruptContinuity(
+        message: String,
+        preserveAudio: Bool,
+        resourceBlocked: Bool = false
+    ) -> String {
+        guard let state = transaction?.state,
+              [.preparing, .recording, .finalizing, .recognizing].contains(state) else { return message }
+
+        preparationID = nil
+        preparationStartedAt = nil
+        if preserveAudio,
+           case .available(let url) = transaction?.audioState,
+           FileManager.default.fileExists(atPath: url.path) {
+            preservedAudioURL = url
+        } else {
+            preservedAudioURL = nil
+        }
+        let reportedMessage = preserveAudio && preservedAudioURL == nil
+            ? message.replacingOccurrences(
+                of: "Audio was preserved for recovery.",
+                with: "The captured audio could not be preserved."
+            )
+            : message
+        if resourceBlocked {
+            fail(kind: .resourceBlocked, message: reportedMessage, recoverable: true)
+        } else {
+            do {
+                try transaction?.interruptRecoverably(message: reportedMessage)
+            } catch {
+                assertionFailure("Invalid continuity interruption: \(error)")
+            }
+        }
+        recognitionTask?.cancel()
+        if state == .recording || state == .finalizing {
+            captureOutput?.stopRecording()
+        } else if state == .preparing, let operationID = transaction?.operationID {
+            artifactCleaner.removeOperation(operationID: operationID)
+            transaction?.setAudioState(.discarded)
+        }
+        activeProfileID = nil
+        status = reportedMessage
+        return reportedMessage
+    }
+
+    private func notify(_ notification: ContinuityNotification, message: String) {
+        lastContinuityNotification = notification
+        onContinuityNotification?(notification, message)
     }
 
     func beginCommit(operationID: UUID) {

@@ -10,6 +10,11 @@ actor WhisperRuntime {
     private var session: LocalInferenceSession?
     private var activeProfileID: String?
 
+    func invalidate() {
+        session = nil
+        activeProfileID = nil
+    }
+
     func transcribe(
         wavURL: URL,
         language: String = "auto",

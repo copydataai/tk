@@ -14,6 +14,30 @@ final class MicrophoneCaptureTests: XCTestCase {
         XCTAssertFalse(MicrophoneCapture.isWorkingInput(level: -758))
     }
 
+    func testOnlyTheCapturedMicrophoneMatchesADisconnect() {
+        XCTAssertTrue(MicrophoneCapture.isCapturedDeviceDisconnect(
+            disconnectedDeviceID: "usb",
+            capturedDeviceID: "usb"
+        ))
+        XCTAssertFalse(MicrophoneCapture.isCapturedDeviceDisconnect(
+            disconnectedDeviceID: "bluetooth",
+            capturedDeviceID: "usb"
+        ))
+    }
+
+    func testPreservedAudioAppliesOnlyToItsOwnOperation() {
+        let preserved = URL(fileURLWithPath: "/tmp/first/recording.caf")
+
+        XCTAssertTrue(MicrophoneCapture.shouldRetainOperationAudio(
+            recordingURL: preserved,
+            preservedAudioURL: preserved
+        ))
+        XCTAssertFalse(MicrophoneCapture.shouldRetainOperationAudio(
+            recordingURL: URL(fileURLWithPath: "/tmp/second/recording.caf"),
+            preservedAudioURL: preserved
+        ))
+    }
+
     func testRecordingCompletionUsesAVFoundationSuccessFlag() {
         XCTAssertTrue(MicrophoneCapture.recordingSucceeded(nil))
         XCTAssertTrue(MicrophoneCapture.recordingSucceeded(NSError(
