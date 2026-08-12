@@ -454,6 +454,10 @@ final class MacTextService: NSObject {
         return chunks
     }
 
+    #if !DEBUG
+    static func speechChunksForQualification(_ text: String) -> [String] { speechChunks(text) }
+    #endif
+
     private var focusedElement: AXUIElement? {
         MacAccessibility.focusedElement
     }

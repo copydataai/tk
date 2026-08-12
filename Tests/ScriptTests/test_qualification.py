@@ -10,8 +10,15 @@ class QualificationCLITests(unittest.TestCase):
 
     def test_installed_qualification_declares_all_required_predicates(self):
         source=(ROOT/"script/qualify_installed_app.sh").read_text()
-        for predicate in ("hdiutil attach","spctl --assess","codesign --verify","stapler validate","TK_QUALIFICATION_READY_FILE","runtimeDownloadsRequired","residentListener","sbom.json","provenance.json","rollback.json","uninstall.json","qualify_compatibility.py"):
+        for predicate in ("hdiutil attach","spctl --assess","codesign --verify","stapler validate","sandbox-exec","TK_QUALIFICATION_EVIDENCE_FILE","offlineTranscription","copyMode","automaticInsertion","readSelection","modelDownloadAttempted","networkAttempted","postOperationCleanup","runtimeDownloadsRequired","residentListener","sbom.json","provenance.json","rollback.json","uninstall.json","qualify_compatibility.py"):
             self.assertIn(predicate,source)
+
+    def test_release_qualification_hook_is_content_free_and_uses_production_modules(self):
+        source=(ROOT/"Sources/TK/App/QualificationWorkflow.swift").read_text()
+        self.assertIn("#if !DEBUG",source)
+        for module in ("LocalInferenceSession", "MacTextService", "TextInsertionCoordinator", "SpeechCapabilityPolicy"):
+            self.assertIn(module,source)
+        self.assertNotIn('"transcript" :',source)
 
     def test_writer_accepts_normal_app_bundle_and_derives_context(self):
         with tempfile.TemporaryDirectory() as raw:

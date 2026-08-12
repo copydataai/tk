@@ -294,6 +294,12 @@ fi
 if [[ "$MODE" == "--dmg" || "$MODE" == "dmg" || "$MODE" == "--release" || "$MODE" == "release" ]]; then
   mkdir -p "$APP_RESOURCES/models"
   cp "$MODEL_FILE" "$VAD_MODEL_FILE" "$KOKORO_MODEL_FILE" "$APP_RESOURCES/models/"
+  python3 - "$APP_RESOURCES/qualification.wav" <<'PY'
+import struct,sys,wave
+with wave.open(sys.argv[1],"wb") as output:
+    output.setnchannels(1); output.setsampwidth(2); output.setframerate(16000)
+    output.writeframes(struct.pack("<16000h", *([0] * 16000)))
+PY
 fi
 
 cat >"$INFO_PLIST" <<PLIST

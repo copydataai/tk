@@ -3,6 +3,15 @@ import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        #if !DEBUG
+        if let path = ProcessInfo.processInfo.environment["TK_QUALIFICATION_EVIDENCE_FILE"] {
+            Task { @MainActor in
+                await QualificationWorkflow.run(evidenceURL: URL(fileURLWithPath: path))
+                NSApp.terminate(nil)
+            }
+            return
+        }
+        #endif
         if let path = ProcessInfo.processInfo.environment["TK_QUALIFICATION_READY_FILE"] {
             let receipt = Data("{\"schemaVersion\":1,\"ready\":true,\"residentListener\":false}\n".utf8)
             try? receipt.write(to: URL(fileURLWithPath: path), options: .atomic)

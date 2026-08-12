@@ -5,7 +5,7 @@ DMG="${1:?usage: qualify_installed_app.sh path/to/tk.dmg}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 [[ -f "$DMG" && -f "$DMG.sha256" ]] || { echo "DMG and matching .sha256 required" >&2; exit 2; }
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/tk-installed-qualification.XXXXXX")"
-MOUNT="$WORK/mount"; INSTALL="$WORK/install"; READY="$WORK/readiness.json"; mkdir -p "$MOUNT" "$INSTALL"
+MOUNT="$WORK/mount"; INSTALL="$WORK/install"; EVIDENCE="$WORK/evidence.json"; mkdir -p "$MOUNT" "$INSTALL"
 device=""; cleanup() { [[ -z "$device" ]] || hdiutil detach "$device" -force >/dev/null 2>&1 || true; rm -rf "$WORK"; }; trap cleanup EXIT
 (cd "$(dirname "$DMG")" && shasum -a 256 -c "$(basename "$DMG").sha256")
 spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
@@ -34,9 +34,27 @@ if sbom.get("format")!="tk-sbom-1" or not isinstance(sbom.get("packages"),list) 
 if provenance.get("format")!="tk-provenance-1" or provenance.get("credentialsLogged") is not False or not provenance.get("commit") or not provenance.get("createdAt"): raise SystemExit("invalid provenance")
 PY
 "$ROOT/script/audit_capabilities.sh" "$ROOT/Assets/tk.entitlements" "$APP"
-TK_QUALIFICATION_READY_FILE="$READY" open -W -n "$APP"
-[[ -f "$READY" ]]; python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r=={"schemaVersion":1,"ready":True,"residentListener":False}' "$READY"
+command -v sandbox-exec >/dev/null || { echo "offline isolation unavailable" >&2; exit 4; }
+PROFILE="$WORK/offline.sb"; cat >"$PROFILE" <<EOF
+(version 1)
+(allow default)
+(deny network*)
+EOF
+TK_QUALIFICATION_EVIDENCE_FILE="$EVIDENCE" sandbox-exec -f "$PROFILE" "$APP/Contents/MacOS/tk"
+[[ -f "$EVIDENCE" ]]
+python3 - "$EVIDENCE" <<'PY'
+import json,sys
+r=json.load(open(sys.argv[1],encoding="utf-8"))
+for predicate in ("offlineTranscription","copyMode","automaticInsertion","readSelection","postOperationCleanup"):
+    if r.get(predicate) is not True: raise SystemExit(f"installed predicate failed: {predicate}")
+for predicate in ("modelDownloadAttempted","networkAttempted"):
+    if r.get(predicate) is not False: raise SystemExit(f"offline predicate failed: {predicate}")
+if set(r) - {"schemaVersion","offlineTranscription","copyMode","automaticInsertion","readSelection","modelDownloadAttempted","networkAttempted","postOperationCleanup"}:
+    raise SystemExit("qualification evidence contains unexpected fields")
+PY
 ! pgrep -f "$APP/Contents/MacOS" >/dev/null
+! pgrep -f "$APP/Contents/Resources/whisper-cli" >/dev/null
+! pgrep -f "$APP/Contents/Resources/kokoro/babylon" >/dev/null
 ! lsof -nP -a -c tk -iTCP -sTCP:LISTEN 2>/dev/null | grep -F "$APP" >/dev/null
 "$ROOT/script/qualify_compatibility.py" --dmg "$DMG" --app "$APP"
 echo "installed artifact predicates passed for $VERSION ($BUILD)"
