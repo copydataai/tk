@@ -144,7 +144,11 @@ final class AppModel {
 
         do {
             let artifact = try profiles.artifact(for: .dictation)
-            if dictationAuthority.mayCaptureInsertionTarget {
+            let operation: SpeechOperation = dictationAuthority.mayInsertAutomatically
+                ? .automaticInsertion
+                : .copyModeDictation
+            let capabilities = SpeechCapabilityPolicy().requiredCapabilities(for: operation)
+            if capabilities.contains(.focusCapture) {
                 macText.rememberInsertionTarget()
             }
             dictation.toggle(language: transcriptionLanguageCode, artifact: artifact)
@@ -244,6 +248,8 @@ final class AppModel {
     }
 
     func readSelection() {
+        let capabilities = SpeechCapabilityPolicy().requiredCapabilities(for: .readSelection)
+        guard capabilities == [.accessibility, .focusCapture, .selectedText] else { return }
         guard ensureAccessibilityPermission() else { return }
 
         Task {

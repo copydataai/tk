@@ -28,6 +28,21 @@ struct SpeechCapabilityPolicy {
     }
 }
 
+struct SpeechOperationDispatcher {
+    private let policy = SpeechCapabilityPolicy()
+
+    @discardableResult
+    func dispatch(
+        _ operation: SpeechOperation,
+        using adapter: SpeechCapabilityAdapter,
+        perform: () async -> Void
+    ) async -> Bool {
+        guard await policy.authorize(operation, using: adapter) else { return false }
+        await perform()
+        return true
+    }
+}
+
 struct ClipboardOwnershipToken: Equatable, Sendable {
     let changeCount: Int
     let temporaryValueDigest: String

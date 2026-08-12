@@ -276,6 +276,23 @@ final class CoreWorkflowTests: XCTestCase {
         XCTAssertTrue(authority.mayCopyToClipboard)
     }
 
+    func testLiveSpeechDispatcherMakesZeroForbiddenCallsInCopyMode() async {
+        let adapter = LiveCapabilityAdapter()
+        var operationRan = false
+
+        let authorized = await SpeechOperationDispatcher().dispatch(
+            .copyModeDictation,
+            using: adapter
+        ) { operationRan = true }
+
+        XCTAssertTrue(authorized)
+        XCTAssertTrue(operationRan)
+        XCTAssertEqual(adapter.requests, [.microphone])
+        XCTAssertEqual(adapter.performances.filter {
+            [.accessibility, .focusCapture, .selectedText, .syntheticEvents].contains($0)
+        }.count, 0)
+    }
+
     @MainActor
     func testCopyingAReadyResultReturnsCopyOnlyAndKeepsPendingText() throws {
         let directory = FileManager.default.temporaryDirectory
@@ -412,5 +429,19 @@ private final class ProductionInsertionAdapter: TextInsertionAdapter, @unchecked
         if !states.isEmpty { return states.removeFirst() }
         defer { postMutation = nil }
         return postMutation
+    }
+}
+
+private final class LiveCapabilityAdapter: SpeechCapabilityAdapter {
+    private(set) var requests: [SpeechCapability] = []
+    private(set) var performances: [SpeechCapability] = []
+
+    func request(_ capability: SpeechCapability) async -> Bool {
+        requests.append(capability)
+        return true
+    }
+
+    func perform(_ capability: SpeechCapability) async {
+        performances.append(capability)
     }
 }
