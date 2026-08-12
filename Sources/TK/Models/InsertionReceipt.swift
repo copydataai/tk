@@ -7,6 +7,9 @@ enum InsertionFailureReason: String, Equatable, Sendable {
     case targetChanged
     case unsupportedControl
     case readbackMismatch
+    case secureField
+    case protectedControl
+    case ambiguousTarget
 }
 
 struct UndoTargetState: Equatable, Sendable {
