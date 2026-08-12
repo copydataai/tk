@@ -64,8 +64,16 @@ final class MacTextService: NSObject {
     private var insertionTarget: MacAccessibility.InsertionTarget?
     private var pasteboardOperationInProgress = false
     private var pasteboardWaiters: [CheckedContinuation<Void, Never>] = []
+    private let injectedInsertionAdapter: (any TextInsertionAdapter)?
+    private let accessibilityGranted: () -> Bool
+    private var transactionTarget: MacAccessibility.InsertionTarget?
 
-    override init() {
+    init(
+        insertionAdapter: (any TextInsertionAdapter)? = nil,
+        accessibilityGranted: @escaping () -> Bool = { AXIsProcessTrusted() }
+    ) {
+        injectedInsertionAdapter = insertionAdapter
+        self.accessibilityGranted = accessibilityGranted
         let check = Self.speechChunks(String(repeating: "word ", count: 100))
         assert(check.count == 2 && check.allSatisfy { $0.count <= 350 })
         super.init()
@@ -98,98 +106,22 @@ final class MacTextService: NSObject {
         insertionTarget = MacAccessibility.insertionTarget(from: focusedElement)
     }
 
-    func insert(_ text: String, operationID: UUID) async -> InsertionReceipt {
-        guard hasAccessibilityPermission else {
+    func insert(
+        _ text: String,
+        operationID: UUID,
+        persistCandidate: () async throws -> Void
+    ) async -> InsertionReceipt {
+        guard accessibilityGranted() else {
             return .failedRecoverable(.accessibilityRequired)
         }
-        guard !text.isEmpty else { return .failedRecoverable(.readbackMismatch) }
-
-        let target = insertionTarget ?? MacAccessibility.insertionTarget(from: focusedElement)
-        insertionTarget = nil
-        guard let target else { return .failedRecoverable(.noFocusedControl) }
-        guard target.supportsSelectedTextWrite else {
-            return .failedRecoverable(.unsupportedControl)
+        let adapter = injectedInsertionAdapter ?? self
+        do {
+            return try await TextInsertionCoordinator(adapter: adapter)
+                .insert(text, operationID: operationID, persistCandidate: persistCandidate)
+                .receipt
+        } catch {
+            return .failedRecoverable(.persistenceUnavailable)
         }
-        guard let current = MacAccessibility.insertionTarget(from: focusedElement),
-              target.fingerprint.corresponds(to: current.fingerprint) else {
-            return .targetMismatch
-        }
-
-        let originalValue = MacAccessibility.value(of: target.element)
-        let originalRange = MacAccessibility.selectedTextRange(of: target.element)
-        let replacedText = MacAccessibility.selectedText(of: target.element)
-
-        let writeSucceeded = AXUIElementSetAttributeValue(
-               target.element,
-               kAXSelectedTextAttribute as CFString,
-               text as CFTypeRef
-        ) == .success
-        if writeSucceeded {
-            let insertedRange = originalValue.flatMap { value in
-                originalRange.flatMap { range in
-                    Self.insertedRange(replacing: range, with: text, in: value)
-                }
-            }
-            let preStateReadable = originalValue != nil
-                && originalRange != nil
-                && replacedText != nil
-                && insertedRange != nil
-            let resultingValue = MacAccessibility.value(of: target.element)
-            let resultingRange = MacAccessibility.selectedTextRange(of: target.element)
-            let resultingTarget = MacAccessibility.insertionTarget(from: target.element)
-            let postStateReadable = resultingValue != nil
-                && resultingRange != nil
-                && resultingTarget != nil
-            var verifiedInsertion: VerifiedInsertion?
-            if let originalValue,
-               let originalRange,
-               let replacedText,
-               let insertedRange,
-               let resultingValue,
-               let resultingRange,
-               let resultingTarget,
-               resultingValue == (originalValue as NSString).replacingCharacters(
-                   in: originalRange,
-                   with: text
-               ) {
-                let surrounding = (resultingValue as NSString).replacingCharacters(
-                    in: insertedRange,
-                    with: ""
-                )
-                verifiedInsertion = .init(
-                    operationID: operationID,
-                    target: resultingTarget.fingerprint,
-                    insertedRange: insertedRange,
-                    resultingSelectionRange: resultingRange,
-                    resultingValue: resultingValue,
-                    replacedText: replacedText,
-                    surroundingStateDigest: InsertionTargetFingerprint.digest(surrounding)
-                )
-            }
-            return InsertionReceipt.axWriteResult(
-                writeSucceeded: true,
-                preStateReadable: preStateReadable,
-                postStateReadable: postStateReadable,
-                verifiedInsertion: verifiedInsertion
-            )
-        }
-
-        try? await restoreFocus(to: target.element)
-
-        await acquirePasteboardAccess()
-        defer { releasePasteboardAccess() }
-        let pasteboard = NSPasteboard.general
-        let snapshot = PasteboardSnapshot(pasteboard)
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-        let insertedTextChangeCount = pasteboard.changeCount
-        guard postCommandKeyIfPossible(UInt16(kVK_ANSI_V)) else {
-            return .copyOnly
-        }
-        // ponytail: fixed delay keeps the clipboard intact; add per-app confirmation if slow apps miss pastes.
-        try? await Task.sleep(for: .milliseconds(150))
-        snapshot.restore(to: pasteboard, ifChangeCountIs: insertedTextChangeCount)
-        return .attempted
     }
 
     func copy(_ text: String) {
@@ -222,20 +154,6 @@ final class MacTextService: NSObject {
             return "Undo could not replace the verified insertion."
         }
         return nil
-    }
-
-    private static func insertedRange(
-        replacing range: NSRange,
-        with text: String,
-        in value: String
-    ) -> NSRange? {
-        guard range.location != NSNotFound,
-              range.location >= 0,
-              range.length >= 0,
-              NSMaxRange(range) <= (value as NSString).length else {
-            return nil
-        }
-        return NSRange(location: range.location, length: (text as NSString).length)
     }
 
     func selectedText() async throws -> String {
@@ -581,5 +499,63 @@ final class MacTextService: NSObject {
             return
         }
         pasteboardWaiters.removeFirst().resume()
+    }
+}
+
+extension MacTextService: TextInsertionAdapter, @unchecked Sendable {
+    func captureTarget() async -> InsertionTargetSnapshot? {
+        let target = insertionTarget ?? MacAccessibility.insertionTarget(from: focusedElement)
+        insertionTarget = nil
+        transactionTarget = target
+        return target.flatMap(snapshot)
+    }
+
+    func replace(range: NSRange, with text: String, in target: InsertionTargetSnapshot) async -> Bool {
+        guard let element = transactionTarget?.element,
+              MacAccessibility.setSelectedTextRange(range, of: element) else { return false }
+        return AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextAttribute as CFString,
+            text as CFTypeRef
+        ) == .success
+    }
+
+    func paste(_ text: String, into target: InsertionTargetSnapshot) async -> Bool {
+        guard let element = transactionTarget?.element else { return false }
+        try? await restoreFocus(to: element)
+        await acquirePasteboardAccess()
+        defer { releasePasteboardAccess() }
+        let pasteboard = NSPasteboard.general
+        let snapshot = PasteboardSnapshot(pasteboard)
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        let changeCount = pasteboard.changeCount
+        guard postCommandKeyIfPossible(UInt16(kVK_ANSI_V)) else { return false }
+        try? await Task.sleep(for: .milliseconds(150))
+        snapshot.restore(to: pasteboard, ifChangeCountIs: changeCount)
+        return true
+    }
+
+    func readTarget() async -> InsertionTargetSnapshot? {
+        guard let current = MacAccessibility.insertionTarget(from: focusedElement),
+              let original = transactionTarget,
+              original.fingerprint.corresponds(to: current.fingerprint) else { return nil }
+        transactionTarget = current
+        return snapshot(current)
+    }
+
+    private func snapshot(_ target: MacAccessibility.InsertionTarget) -> InsertionTargetSnapshot? {
+        guard let value = MacAccessibility.value(of: target.element),
+              let selectedRange = MacAccessibility.selectedTextRange(of: target.element) else { return nil }
+        return InsertionTargetSnapshot(
+            fingerprint: target.fingerprint,
+            value: value,
+            selectedRange: selectedRange,
+            isSecure: target.fingerprint.subrole == "AXSecureTextField",
+            isEnabled: MacAccessibility.boolAttribute(kAXEnabledAttribute, of: target.element) ?? true,
+            isEditable: MacAccessibility.boolAttribute("AXEditable", of: target.element)
+                ?? target.supportsSelectedTextWrite,
+            supportsDirectRangeMutation: target.supportsSelectedTextWrite
+        )
     }
 }

@@ -71,6 +71,13 @@ enum MacAccessibility {
         stringAttribute(kAXValueAttribute, of: element)
     }
 
+    static func boolAttribute(_ attribute: String, of element: AXUIElement) -> Bool? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+              let number = value as? NSNumber else { return nil }
+        return number.boolValue
+    }
+
     static func selectedTextRange(of element: AXUIElement) -> NSRange? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(

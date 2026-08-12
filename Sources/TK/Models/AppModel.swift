@@ -192,7 +192,9 @@ final class AppModel {
                 try dictation.updatePendingText(recoveryText)
                 let receipt = try await dictation.retryPendingResult { [weak self] text, operationID in
                     guard let self else { return .failedRecoverable(.noFocusedControl) }
-                    return await macText.insert(text, operationID: operationID)
+                    return await macText.insert(text, operationID: operationID) {
+                        try self.dictation.persistCandidate(operationID: operationID)
+                    }
                 }
                 applyInsertionReceipt(receipt)
             } catch {
@@ -467,7 +469,9 @@ final class AppModel {
             }
             let receipt = try await dictation.commitCandidate(operationID: operationID) { [weak self] text in
                 guard let self else { return .failedRecoverable(.noFocusedControl) }
-                return await macText.insert(text, operationID: operationID)
+                return await macText.insert(text, operationID: operationID) {
+                    try self.dictation.persistCandidate(operationID: operationID)
+                }
             }
             applyInsertionReceipt(receipt)
         } catch {

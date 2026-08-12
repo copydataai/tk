@@ -4,6 +4,38 @@ import XCTest
 
 final class CoreWorkflowTests: XCTestCase {
     @MainActor
+    func testLiveTextServicePersistsBeforeTransactionalMutationAndUsesDirectRange() async throws {
+        let target = productionSnapshot(value: "A👨‍👩‍👧‍👦Z", range: NSRange(location: 1, length: 11))
+        let adapter = ProductionInsertionAdapter(states: [target, target])
+        adapter.postMutation = productionSnapshot(value: "A🙂Z", range: NSRange(location: 3, length: 0))
+        let service = MacTextService(insertionAdapter: adapter, accessibilityGranted: { true })
+        var persisted = false
+
+        let receipt = await service.insert("🙂", operationID: UUID()) {
+            persisted = true
+        }
+
+        XCTAssertTrue(persisted)
+        XCTAssertTrue(receipt.isVerified)
+        XCTAssertEqual(adapter.events, ["capture", "read", "replace", "read"])
+    }
+
+    @MainActor
+    func testLiveTextServiceRetainsCandidateWhenTargetChangesBeforeMutation() async throws {
+        let captured = productionSnapshot(value: "hello", range: NSRange(location: 1, length: 0))
+        let changed = productionSnapshot(value: "hello", range: NSRange(location: 2, length: 0))
+        let adapter = ProductionInsertionAdapter(states: [captured, changed])
+        let service = MacTextService(insertionAdapter: adapter, accessibilityGranted: { true })
+        var persisted = false
+
+        let receipt = await service.insert("x", operationID: UUID()) { persisted = true }
+
+        XCTAssertTrue(persisted)
+        XCTAssertEqual(receipt, .failedRecoverable(.targetChanged))
+        XCTAssertEqual(adapter.events, ["capture", "read"])
+    }
+
+    @MainActor
     func testInsertionFailureAndRelaunchRecoverExactlyThePendingText() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -275,5 +307,55 @@ final class CoreWorkflowTests: XCTestCase {
             replacedText: "",
             surroundingStateDigest: InsertionTargetFingerprint.digest("")
         ))
+    }
+}
+
+private func productionSnapshot(value: String, range: NSRange) -> InsertionTargetSnapshot {
+    .init(
+        fingerprint: .init(
+            processIdentifier: 1,
+            bundleIdentifier: "test",
+            role: "AXTextArea",
+            subrole: nil,
+            windowDigest: "window",
+            elementIdentity: 1,
+            readableStateDigest: InsertionTargetFingerprint.digest(value)
+        ),
+        value: value,
+        selectedRange: range,
+        isSecure: false,
+        isEnabled: true,
+        isEditable: true,
+        supportsDirectRangeMutation: true
+    )
+}
+
+private final class ProductionInsertionAdapter: TextInsertionAdapter, @unchecked Sendable {
+    private var states: [InsertionTargetSnapshot]
+    var postMutation: InsertionTargetSnapshot?
+    private(set) var events: [String] = []
+
+    init(states: [InsertionTargetSnapshot]) { self.states = states }
+
+    func captureTarget() async -> InsertionTargetSnapshot? {
+        events.append("capture")
+        return states.isEmpty ? nil : states.removeFirst()
+    }
+
+    func replace(range: NSRange, with text: String, in target: InsertionTargetSnapshot) async -> Bool {
+        events.append("replace")
+        return true
+    }
+
+    func paste(_ text: String, into target: InsertionTargetSnapshot) async -> Bool {
+        events.append("paste")
+        return true
+    }
+
+    func readTarget() async -> InsertionTargetSnapshot? {
+        events.append("read")
+        if !states.isEmpty { return states.removeFirst() }
+        defer { postMutation = nil }
+        return postMutation
     }
 }
