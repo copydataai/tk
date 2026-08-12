@@ -21,6 +21,7 @@ final class AppModel {
     var transcripts: [TranscriptRecord] = []
     var recoveryText = ""
     private(set) var lastInsertionReceipt: InsertionReceipt?
+    private(set) var lastDeletionReceipt: DeletionReceipt?
     var historyRetentionLimit: Int {
         didSet {
             historyRetentionLimit = max(0, historyRetentionLimit)
@@ -353,12 +354,22 @@ final class AppModel {
         transcripts.removeAll { $0.id == transcript.id }
     }
 
-    func clearTranscriptHistory() throws {
+    @discardableResult
+    func clearTranscriptHistory() throws -> DeletionReceipt {
         guard let transcriptStore else {
             throw TranscriptStoreError.sqlite(transcriptStoreError ?? "The database is unavailable.")
         }
-        try transcriptStore.clear()
+        let receipt = try transcriptStore.clear(
+            selectedArtifacts: [dictation.pendingDeletionArtifact]
+        )
         transcripts.removeAll()
+        if receipt.failures.contains(where: { $0.store == .pendingDictation }) == false {
+            dictation.acknowledgePendingArtifactDeletion()
+            recoveryText = ""
+        }
+        lastDeletionReceipt = receipt
+        statusMessage = receipt.summary
+        return receipt
     }
 
     func transcriptExportData() throws -> Data {
@@ -435,7 +446,7 @@ final class AppModel {
 
     private func saveAndInsert(_ text: String, operationID: UUID) async {
         do {
-            saveTranscript(text)
+            saveTranscript(text, sourceOperationID: operationID)
             guard dictationAuthority.mayInsertAutomatically else {
                 try dictation.persistCandidate(operationID: operationID)
                 recoveryText = text
@@ -459,14 +470,14 @@ final class AppModel {
         DictationAuthority(accessibilityGranted: accessibilityGranted)
     }
 
-    private func saveTranscript(_ text: String) {
+    private func saveTranscript(_ text: String, sourceOperationID: UUID? = nil) {
         do {
             guard let transcriptStore else {
                 throw TranscriptStoreError.sqlite(
                     transcriptStoreError ?? "The database is unavailable."
                 )
             }
-            try transcriptStore.insert(text)
+            try transcriptStore.insert(text, sourceOperationID: sourceOperationID)
             transcripts = try transcriptStore.recent(limit: historyRetentionLimit)
             transcriptStoreError = nil
         } catch {

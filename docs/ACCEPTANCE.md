@@ -67,6 +67,11 @@ Repeat the following in every target app listed in the compatibility record:
 - [ ] Confirm no model download or account sign-in is requested for bundled defaults.
 - [ ] Confirm microphone audio is not retained after dictation.
 - [ ] Confirm local history persists after relaunch and can be cleared through the app.
+- [ ] Export History and confirm every record includes `contentTrust: untrustedSpeechRecognition`, `agentEligibility: ineligible`, an optional `sourceOperationID`, and `retentionDisposition: retainedHistory`.
+- [ ] Open a database created by the prior release and confirm legacy rows receive the same safe trust and agent-eligibility defaults.
+- [ ] Set history retention to zero while a recovery result is pending; confirm history remains empty and the separately pending result survives.
+- [ ] Use **Clear All** and confirm the deletion receipt lists the transcript database, WAL, shared-memory state, selected corrupt archives, and pending artifact as successes or failures, plus SSD, snapshots, backups, and free-space exclusions.
+- [ ] Confirm **Clear All** removes selected application-controlled pending/corrupt artifacts and leaves no claim that SSD blocks were securely erased.
 - [ ] During dictation, confirm `whisper-cli` exists only for that operation and exits on completion or cancellation. Confirm no `whisper-server` listener remains.
 - [ ] Quit from the menu bar and confirm `tk`, `whisper-cli`, and `babylon` processes exit.
 - [ ] Relaunch after logout/login or a reboot and repeat one dictation and one read-aloud operation.

@@ -111,6 +111,34 @@ final class TranscriptStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: archivedFiles[0].path))
     }
 
+    func testClearReportsApplicationControlledDeletionScope() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        try fixture.store.insert("delete everywhere")
+        let corruptArchive = fixture.databaseURL.appendingPathExtension("corrupt-selected")
+        let pendingArtifact = fixture.directory.appendingPathComponent("pending-dictation.json")
+        try Data("archive".utf8).write(to: corruptArchive)
+        try Data("pending".utf8).write(to: pendingArtifact)
+
+        let receipt = try fixture.store.clear(
+            selectedArtifacts: [
+                .init(store: .corruptArchive, url: corruptArchive),
+                .init(store: .pendingDictation, url: pendingArtifact),
+            ]
+        )
+
+        XCTAssertEqual(try fixture.store.recent(), [])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: corruptArchive.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: pendingArtifact.path))
+        XCTAssertTrue(receipt.successes.contains { $0.store == .transcriptDatabase })
+        XCTAssertTrue(receipt.successes.contains { $0.store == .writeAheadLog })
+        XCTAssertTrue(receipt.successes.contains { $0.store == .sharedMemory })
+        XCTAssertTrue(receipt.successes.contains { $0.store == .corruptArchive })
+        XCTAssertTrue(receipt.successes.contains { $0.store == .pendingDictation })
+        XCTAssertEqual(receipt.failures, [])
+        XCTAssertTrue(receipt.exclusions.contains { $0.contains("SSD") })
+    }
+
     private func makeFixture(
         retentionLimit: Int = TranscriptStore.defaultRetentionLimit
     ) throws -> Fixture {

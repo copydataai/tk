@@ -17,6 +17,10 @@ enum PendingDictationStoreError: LocalizedError {
 final class PendingDictationStore {
     private let fileURL: URL
 
+    var deletionArtifact: DeletionArtifact {
+        .init(store: .pendingDictation, url: fileURL)
+    }
+
     static func applicationSupport() throws -> PendingDictationStore {
         let directory = try FileManager.default.url(
             for: .applicationSupportDirectory,

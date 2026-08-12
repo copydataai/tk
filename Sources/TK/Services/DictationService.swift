@@ -416,6 +416,15 @@ final class DictationService {
         pendingStoreError = nil
     }
 
+    var pendingDeletionArtifact: DeletionArtifact {
+        pendingStore.deletionArtifact
+    }
+
+    func acknowledgePendingArtifactDeletion() {
+        pendingResult = nil
+        pendingStoreError = nil
+    }
+
     func updatePendingText(_ text: String) throws {
         guard var pending = pendingResult else { return }
         pending.text = text

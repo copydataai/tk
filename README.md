@@ -86,7 +86,9 @@ Before a release, complete the real-device checks in [docs/ACCEPTANCE.md](docs/A
 4. `tk` automatically uses the last working microphone and falls back to another connected input when needed.
 5. Open **Read aloud** to preview a voice, or select text in another app and press the read shortcut after granting Accessibility.
 
-Voice settings are saved automatically. Transcript text and timestamps are stored with macOS SQLite at `~/Library/Application Support/tk/history.sqlite3`; microphone audio is not retained.
+Voice settings are saved automatically. Transcript text, timestamps, trust metadata, optional source operation IDs, and retention disposition are stored with macOS SQLite at `~/Library/Application Support/tk/history.sqlite3`; microphone audio is not retained. New and legacy history rows are treated as `untrustedSpeechRecognition` and `ineligible` for agent use, and JSON history exports preserve those safe labels.
+
+**Clear All** deletes transcript rows with SQLite `secure_delete=ON`, checkpoints and truncates the write-ahead log, and removes explicitly selected application-controlled corrupt archives and the pending dictation artifact. Its deletion receipt lists successes, failures, and exclusions. This is not an SSD secure-erasure claim: filesystem snapshots, backups, controller-managed flash blocks, and free space remain outside the app's control. Setting history retention to zero removes history records but preserves a separately pending recovery result until it is explicitly discarded or included in **Clear All**.
 
 Default shortcuts:
 
