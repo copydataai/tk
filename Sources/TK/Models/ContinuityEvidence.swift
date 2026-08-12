@@ -10,6 +10,8 @@ struct ContinuityEvidenceRecord: Codable, Equatable, Sendable {
     let rowID: String
     let kind: EvidenceKind
     let appVersion: String
+    let appBuild: String
+    let artifactName: String
     let artifactSHA256: String
     let macOSBuild: String
     let hardwareIdentifier: String
@@ -24,6 +26,7 @@ struct ContinuityEvidenceRecord: Codable, Equatable, Sendable {
     let helperDisposition: String
     let testerAssertion: String
     let recordedAt: Date
+    let expiresAt: Date
 }
 
 struct ContinuityMatrixRow: Codable, Equatable, Sendable {
@@ -43,10 +46,20 @@ enum ContinuityEvidenceError: Error, Equatable {
     case missingObservation
     case simulatedCannotPass
     case generalizedEvidence
+    case unsupportedSchema
+    case staleRecord
 }
 
 struct ContinuityEvidenceValidator {
     func validate(_ record: ContinuityEvidenceRecord, rows: [ContinuityMatrixRow]) throws -> ContinuityMatrixRow {
+        guard record.schemaVersion == ContinuityEvidenceRecord.schemaVersion else {
+            throw ContinuityEvidenceError.unsupportedSchema
+        }
+        guard record.recordedAt <= Date().addingTimeInterval(300),
+              record.expiresAt >= Date(),
+              record.expiresAt.timeIntervalSince(record.recordedAt) <= 30 * 24 * 60 * 60 + 60 else {
+            throw ContinuityEvidenceError.staleRecord
+        }
         let matches = rows.filter { $0.id == record.rowID }
         guard matches.count == 1, let row = matches.first else { throw ContinuityEvidenceError.unknownOrAmbiguousRow }
         guard record.appVersion == row.expectedAppVersion,

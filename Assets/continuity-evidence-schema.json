@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tk.local/schemas/continuity-evidence-v1.json",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "rowID", "kind", "appVersion", "appBuild", "artifactName", "artifactSHA256", "macOSBuild", "hardwareIdentifier", "inputRoute", "inputDeviceUID", "sampleRate", "operationID", "interruptionPhase", "notificationsObserved", "outcome", "audioDisposition", "helperDisposition", "testerAssertion", "recordedAt", "expiresAt"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "rowID": {"type": "string", "minLength": 1, "pattern": "^[a-z0-9-]+$"},
+    "kind": {"const": "physical"},
+    "appVersion": {"type": "string", "minLength": 1},
+    "appBuild": {"type": "string", "minLength": 1},
+    "artifactName": {"type": "string", "pattern": "\\.dmg$"},
+    "artifactSHA256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "macOSBuild": {"type": "string", "minLength": 1},
+    "hardwareIdentifier": {"type": "string", "minLength": 1},
+    "inputRoute": {"type": "string", "minLength": 1},
+    "inputDeviceUID": {"type": "string", "minLength": 1},
+    "sampleRate": {"type": "number", "exclusiveMinimum": 0},
+    "operationID": {"type": "string", "format": "uuid"},
+    "interruptionPhase": {"type": "string", "minLength": 1},
+    "notificationsObserved": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "outcome": {"enum": ["Pass", "Fail", "Blocked"]},
+    "audioDisposition": {"type": "string", "minLength": 1},
+    "helperDisposition": {"type": "string", "minLength": 1},
+    "testerAssertion": {"type": "string", "minLength": 1},
+    "recordedAt": {"type": "string", "format": "date-time"},
+    "expiresAt": {"type": "string", "format": "date-time"}
+  }
+}

@@ -28,6 +28,6 @@ final class ContinuityEvidenceTests: XCTestCase {
     }
 
     private func makeRecord(kind: EvidenceKind, outcome: QualificationStatus, deviceUID: String = "usb-1") -> ContinuityEvidenceRecord {
-        .init(schemaVersion: 1, rowID: row.id, kind: kind, appVersion: "1.0", artifactSHA256: "abc", macOSBuild: "24A", hardwareIdentifier: "Mac15,6", inputRoute: "USB", inputDeviceUID: deviceUID, sampleRate: 48_000, operationID: UUID(), interruptionPhase: "recording", notificationsObserved: ["deviceDisconnected"], outcome: outcome, audioDisposition: "removed", helperDisposition: "notStarted", testerAssertion: "Observed physical disconnect and recovery", recordedAt: Date())
+        .init(schemaVersion: 1, rowID: row.id, kind: kind, appVersion: "1.0", appBuild: "1", artifactName: "tk-1.0.dmg", artifactSHA256: "abc", macOSBuild: "24A", hardwareIdentifier: "Mac15,6", inputRoute: "USB", inputDeviceUID: deviceUID, sampleRate: 48_000, operationID: UUID(), interruptionPhase: "recording", notificationsObserved: ["deviceDisconnected"], outcome: outcome, audioDisposition: "removed", helperDisposition: "notStarted", testerAssertion: "Observed physical disconnect and recovery", recordedAt: Date(), expiresAt: Date().addingTimeInterval(24 * 60 * 60))
     }
 }
