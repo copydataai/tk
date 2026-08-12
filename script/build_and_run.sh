@@ -51,7 +51,7 @@ DMG_PATH="$DIST_DIR/$APP_NAME-$VERSION.dmg"
 INSTALLED_APP="$HOME/Applications/$APP_NAME.app"
 WHISPER_SOURCE="$ROOT_DIR/.build/vendor/whisper.cpp"
 WHISPER_BUILD="$WHISPER_SOURCE/build-apple"
-WHISPER_BINARY="$WHISPER_BUILD/bin/whisper-server"
+WHISPER_BINARY="$WHISPER_BUILD/bin/whisper-cli"
 BABYLON_SOURCE="$ROOT_DIR/.build/vendor/babylon"
 BABYLON_BUILD="$BABYLON_SOURCE/build-apple"
 BABYLON_BIN="$BABYLON_SOURCE/bin-apple"
@@ -194,7 +194,7 @@ if [[ ! -x "$WHISPER_BINARY" ]] ||
     -DBUILD_SHARED_LIBS=OFF \
     -DGGML_METAL=ON \
     -DCMAKE_BUILD_TYPE=Release
-  cmake --build "$WHISPER_BUILD" --target whisper-server -j "$(sysctl -n hw.logicalcpu)"
+  cmake --build "$WHISPER_BUILD" --target whisper-cli -j "$(sysctl -n hw.logicalcpu)"
 fi
 
 if [[ ! -x "$BABYLON_BINARY" ]] ||
@@ -251,7 +251,7 @@ rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_RESOURCES" "$APP_FRAMEWORKS"
 cp "$BUILD_BINARY" "$APP_BINARY"
 /usr/bin/ditto "$SPARKLE_FRAMEWORK" "$APP_FRAMEWORKS/Sparkle.framework"
-cp "$WHISPER_BINARY" "$APP_RESOURCES/whisper-server"
+cp "$WHISPER_BINARY" "$APP_RESOURCES/whisper-cli"
 cp "$WHISPER_SOURCE/LICENSE" "$APP_RESOURCES/Whisper-LICENSE"
 cp "$ROOT_DIR/Assets/THIRD_PARTY_NOTICES.md" "$APP_RESOURCES/THIRD_PARTY_NOTICES.md"
 cp "$APP_ICON" "$APP_RESOURCES/tk.icns"
@@ -270,7 +270,7 @@ cp "$BABYLON_SOURCE/LICENSE" "$KOKORO_RESOURCES/Babylon-LICENSE"
 cp "$BABYLON_SOURCE/submodules/onnxruntime/rust/LICENSE-APACHE" \
   "$KOKORO_RESOURCES/Kokoro-ONNX-Apache-2.0-LICENSE"
 chmod +x "$APP_BINARY"
-chmod +x "$APP_RESOURCES/whisper-server"
+chmod +x "$APP_RESOURCES/whisper-cli"
 chmod +x "$KOKORO_RESOURCES/babylon"
 if ! /usr/bin/otool -l "$APP_BINARY" | grep -Fq '@executable_path/../Frameworks'; then
   /usr/bin/install_name_tool -add_rpath '@executable_path/../Frameworks' "$APP_BINARY"
@@ -321,7 +321,7 @@ sign_distribution() {
     /usr/bin/codesign --force --sign "$identity" --timestamp --options runtime "$library"
   done < <(find "$KOKORO_RESOURCES/lib" -type f -name '*.dylib' -print)
   /usr/bin/codesign --force --sign "$identity" --timestamp --options runtime "$KOKORO_RESOURCES/babylon"
-  /usr/bin/codesign --force --sign "$identity" --timestamp --options runtime "$APP_RESOURCES/whisper-server"
+  /usr/bin/codesign --force --sign "$identity" --timestamp --options runtime "$APP_RESOURCES/whisper-cli"
   /usr/bin/codesign --force --deep --sign "$identity" --timestamp --options runtime "$APP_FRAMEWORKS/Sparkle.framework"
   /usr/bin/codesign \
     --force \
@@ -400,24 +400,7 @@ case "$MODE" in
     sleep 1
     pgrep -x "$APP_NAME" >/dev/null
     VERIFY_DIR="$(mktemp -d)"
-    VERIFY_PORT=$((49152 + RANDOM % 16384))
-    "$APP_RESOURCES/whisper-server" \
-      --model "$MODEL_FILE" \
-      --host 127.0.0.1 \
-      --port "$VERIFY_PORT" \
-      --language auto \
-      --vad \
-      --vad-model "$VAD_MODEL_FILE" \
-      --no-timestamps \
-      >/dev/null 2>&1 &
-    VERIFY_SERVER_PID=$!
-    trap 'kill "$VERIFY_SERVER_PID" >/dev/null 2>&1 || true; rm -rf "$VERIFY_DIR"' EXIT
-    for _ in {1..1200}; do
-      curl -fsS "http://127.0.0.1:$VERIFY_PORT/health" >/dev/null 2>&1 && break
-      kill -0 "$VERIFY_SERVER_PID" >/dev/null 2>&1
-      sleep 0.1
-    done
-    curl -fsS "http://127.0.0.1:$VERIFY_PORT/health" >/dev/null
+    trap 'rm -rf "$VERIFY_DIR"' EXIT
     /usr/bin/afconvert \
       "$WHISPER_SOURCE/samples/jfk.wav" \
       "$VERIFY_DIR/input.caf" \
@@ -426,23 +409,35 @@ case "$MODE" in
       "$VERIFY_DIR/input.caf" \
       "$VERIFY_DIR/input.wav" \
       -f WAVE -d LEI16@16000 -c 1
-    VERIFY_TRANSCRIPT="$(curl -fsS "http://127.0.0.1:$VERIFY_PORT/inference" \
-      -F "file=@$VERIFY_DIR/input.wav;type=audio/wav" \
-      -F language=en \
-      -F response_format=json \
-      -F vad=true \
-      -F no_timestamps=true)"
+    "$APP_RESOURCES/whisper-cli" \
+      --model "$MODEL_FILE" \
+      --file "$VERIFY_DIR/input.wav" \
+      --language en \
+      --vad \
+      --vad-model "$VAD_MODEL_FILE" \
+      --no-timestamps \
+      --no-prints \
+      --output-txt \
+      --output-file "$VERIFY_DIR/transcript" \
+      >/dev/null 2>&1
+    VERIFY_TRANSCRIPT="$(cat "$VERIFY_DIR/transcript.txt")"
     [[ "$VERIFY_TRANSCRIPT" == *"fellow Americans"* ]]
     /usr/bin/afconvert \
       "$WHISPER_SOURCE/samples/jfk.wav" \
       "$VERIFY_DIR/silence.wav" \
       -f WAVE -d LEI16@16000 -c 1 -m -1
-    [[ "$(curl -fsS "http://127.0.0.1:$VERIFY_PORT/inference" \
-      -F "file=@$VERIFY_DIR/silence.wav;type=audio/wav" \
-      -F language=en \
-      -F response_format=json \
-      -F vad=true \
-      -F no_timestamps=true)" == '{"text":""}' ]]
+    "$APP_RESOURCES/whisper-cli" \
+      --model "$MODEL_FILE" \
+      --file "$VERIFY_DIR/silence.wav" \
+      --language en \
+      --vad \
+      --vad-model "$VAD_MODEL_FILE" \
+      --no-timestamps \
+      --no-prints \
+      --output-txt \
+      --output-file "$VERIFY_DIR/silence-transcript" \
+      >/dev/null 2>&1
+    [[ ! -s "$VERIFY_DIR/silence-transcript.txt" ]]
     "$KOKORO_RESOURCES/babylon" \
       --phonemizer-model "$KOKORO_RESOURCES/models/open-phonemizer.onnx" \
       --dictionary "$KOKORO_RESOURCES/data/dictionary.json" \

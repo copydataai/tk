@@ -60,8 +60,20 @@ Repeat the following in every target app listed in the compatibility record:
 - [ ] Confirm no model download or account sign-in is requested for bundled defaults.
 - [ ] Confirm microphone audio is not retained after dictation.
 - [ ] Confirm local history persists after relaunch and can be cleared through the app.
-- [ ] Quit from the menu bar and confirm `tk`, `whisper-server`, and `babylon` processes exit.
+- [ ] During dictation, confirm `whisper-cli` exists only for that operation and exits on completion or cancellation. Confirm no `whisper-server` listener remains.
+- [ ] Quit from the menu bar and confirm `tk`, `whisper-cli`, and `babylon` processes exit.
 - [ ] Relaunch after logout/login or a reboot and repeat one dictation and one read-aloud operation.
+
+### Local inference boundary
+
+The pinned whisper.cpp server does not provide narrow, distributable request authentication or request-size enforcement. tk therefore packages `whisper-cli` and launches a fresh helper for each dictation instead of exposing a reusable HTTP listener. Input size and declared duration are checked before launch. Only one operation is admitted at a time. Runtime, response size, and operation lifetime are bounded, and cancellation kills the helper and removes its private output directory. Standard output and standard error are discarded so helper diagnostics cannot disclose request authority. There is no reusable token or process authority after exit.
+
+- [ ] Confirm malformed, oversize, and over-duration inputs are rejected before `whisper-cli` starts.
+- [ ] Confirm a second concurrent dictation is rejected while the first helper is active.
+- [ ] Confirm timeout and cancellation terminate the helper and remove its operation directory.
+- [ ] Confirm the packaged app contains `whisper-cli` and does not contain `whisper-server`.
+
+This boundary protects against unrelated local processes reaching an unauthenticated resident inference listener. Compromise of the same user account or the full system remains out of scope because such an attacker can inspect or control tk's files and processes directly.
 
 ## Release decision
 
@@ -71,4 +83,3 @@ Repeat the following in every target app listed in the compatibility record:
 - [ ] Release owner decision: SHIP / HOLD
 
 Notes and linked issues:
-
