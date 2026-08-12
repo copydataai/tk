@@ -97,10 +97,21 @@ final class OperationJournal {
 
     init(fileURL: URL) { self.fileURL = fileURL }
 
+    static func applicationSupport() throws -> OperationJournal {
+        let directory = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        return OperationJournal(fileURL: directory
+            .appendingPathComponent("tk", isDirectory: true)
+            .appendingPathComponent("operation-journal.json"))
+    }
+
     func append(_ entry: OperationJournalEntry) throws {
         var entries = try loadIfPresent()
-        if let latest = entries.last {
-            guard latest.operationID == entry.operationID else { throw OperationJournalError.operationMismatch }
+        if let latest = entries.last, latest.operationID == entry.operationID {
             guard entry.predecessorVersion == latest.version else {
                 throw OperationJournalError.invalidPredecessor(
                     expected: latest.version,
@@ -108,6 +119,12 @@ final class OperationJournal {
                 )
             }
             if latest == entry { return }
+        } else if let latest = entries.last {
+            let complete = latest.phase == .commit || latest.phase == .discard || latest.verifiedInsertion
+            guard complete else { throw OperationJournalError.operationMismatch }
+            guard entry.predecessorVersion == nil, entry.version == 1 else {
+                throw OperationJournalError.invalidPredecessor(expected: nil, actual: entry.predecessorVersion)
+            }
         } else if entry.predecessorVersion != nil {
             throw OperationJournalError.invalidPredecessor(expected: nil, actual: entry.predecessorVersion)
         }
@@ -135,7 +152,9 @@ final class OperationJournal {
                 throw OperationJournalError.futureSchema(entries.map(\.schemaVersion).max() ?? 0)
             }
             for (index, entry) in entries.enumerated() {
-                let predecessor = index == 0 ? nil : entries[index - 1].version
+                let predecessor = index == 0 || entries[index - 1].operationID != entry.operationID
+                    ? nil
+                    : entries[index - 1].version
                 guard entry.predecessorVersion == predecessor else {
                     throw OperationJournalError.invalidPredecessor(
                         expected: predecessor,

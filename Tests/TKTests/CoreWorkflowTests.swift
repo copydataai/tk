@@ -64,6 +64,61 @@ final class CoreWorkflowTests: XCTestCase {
     }
 
     @MainActor
+    func testProductionRelaunchRecoversJournaledTargetlessPendingOperationIdempotently() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let pendingURL = directory.appendingPathComponent("pending.json")
+        let journalURL = directory.appendingPathComponent("operation.json")
+        let operationID = UUID()
+        let first = DictationService(
+            pendingStore: PendingDictationStore(fileURL: pendingURL),
+            operationJournal: OperationJournal(fileURL: journalURL)
+        )
+        first.acceptRecognizedCandidate(operationID: operationID, text: "survive death", profileID: "profile")
+        try first.persistCandidate(operationID: operationID)
+
+        let relaunched = DictationService(
+            pendingStore: PendingDictationStore(fileURL: pendingURL),
+            operationJournal: OperationJournal(fileURL: journalURL)
+        )
+        let relaunchedAgain = DictationService(
+            pendingStore: PendingDictationStore(fileURL: pendingURL),
+            operationJournal: OperationJournal(fileURL: journalURL)
+        )
+
+        XCTAssertEqual(relaunched.pendingResult?.text, "survive death")
+        XCTAssertEqual(relaunchedAgain.pendingResult?.operationID, operationID)
+        XCTAssertTrue(try OperationJournal(fileURL: journalURL).recover()?.mayRetryInsertion == true)
+    }
+
+    @MainActor
+    func testProductionRelaunchNeverRetriesAJournaledVerifiedInsertion() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let pendingURL = directory.appendingPathComponent("pending.json")
+        let journalURL = directory.appendingPathComponent("operation.json")
+        let operationID = UUID()
+        let service = DictationService(
+            pendingStore: PendingDictationStore(fileURL: pendingURL),
+            operationJournal: OperationJournal(fileURL: journalURL)
+        )
+        service.acceptRecognizedCandidate(operationID: operationID, text: "insert once", profileID: "profile")
+        _ = try await service.commitCandidate(operationID: operationID) { text in
+            self.verifiedReceipt(operationID: operationID, text: text)
+        }
+
+        let relaunched = DictationService(
+            pendingStore: PendingDictationStore(fileURL: pendingURL),
+            operationJournal: OperationJournal(fileURL: journalURL)
+        )
+
+        XCTAssertNil(relaunched.pendingResult)
+        XCTAssertFalse(try OperationJournal(fileURL: journalURL).recover()?.mayRetryInsertion ?? true)
+    }
+
+    @MainActor
     func testSuccessfulDispositionAndExplicitDiscardRemovePendingArtifact() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

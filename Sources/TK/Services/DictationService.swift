@@ -14,9 +14,11 @@ final class DictationService {
     private(set) var activeProfileID: String?
     private(set) var lastStartMilliseconds: Double?
     private let pendingStore: PendingDictationStore
+    private let operationJournal: OperationJournal
     private let artifactCleaner: OperationArtifactCleaner
     private(set) var pendingResult: PendingDictation?
     private(set) var pendingStoreError: Error?
+    private(set) var operationJournalError: Error?
     private(set) var artifactCleanupReport: OperationArtifactCleanupReport
     private(set) var preservedAudioURL: URL?
     private(set) var lastContinuityNotification: ContinuityNotification?
@@ -39,11 +41,26 @@ final class DictationService {
 
     init(
         pendingStore: PendingDictationStore? = nil,
+        operationJournal: OperationJournal? = nil,
         artifactCleaner: OperationArtifactCleaner = OperationArtifactCleaner(),
         transaction: DictationTransaction? = nil
     ) {
         self.artifactCleaner = artifactCleaner
         self.transaction = transaction
+        do {
+            if let operationJournal {
+                self.operationJournal = operationJournal
+            } else if pendingStore != nil {
+                self.operationJournal = OperationJournal(fileURL: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("tk-operation-\(UUID().uuidString).json"))
+            } else {
+                self.operationJournal = try OperationJournal.applicationSupport()
+            }
+        } catch {
+            self.operationJournal = OperationJournal(fileURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("tk-unavailable-operation-journal"))
+            operationJournalError = error
+        }
         artifactCleanupReport = artifactCleaner.cleanupStale()
         let resolvedStore: PendingDictationStore
         do {
@@ -61,6 +78,14 @@ final class DictationService {
             pendingResult = try resolvedStore.load()
         } catch {
             pendingStoreError = error
+        }
+        do {
+            if let recovery = try self.operationJournal.recover(), recovery.latest.verifiedInsertion {
+                try resolvedStore.discard()
+                pendingResult = nil
+            }
+        } catch {
+            operationJournalError = error
         }
     }
 
@@ -117,6 +142,7 @@ final class DictationService {
             operationID: operationID,
             profileID: artifact.profileID
         )
+        try? record(.capture, operationID: operationID, retention: .temporaryAudio, reason: .started)
         status = "Waiting for microphone access…"
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
@@ -294,6 +320,7 @@ final class DictationService {
                     )
                 }
                 let artifact = try resolveArtifact(profileID)
+                try record(.inference, operationID: operationID, retention: .temporaryAudio, reason: .started)
                 try await Task.detached {
                     try MicrophoneCapture.convertToWhisperWAV(recordingURL, outputURL: wavURL)
                 }.value
@@ -438,6 +465,8 @@ final class DictationService {
         try? restored.setCandidateText(text, at: createdAt)
         transaction = restored
         transcript = text
+        try? record(.inference, operationID: operationID, content: text, retention: .temporaryAudio, reason: .completed)
+        try? record(.pendingResult, operationID: operationID, content: text, retention: .pendingText, reason: .completed)
     }
 
     func persistCandidate(operationID: UUID) throws {
@@ -455,12 +484,14 @@ final class DictationService {
         try pendingStore.save(pending)
         pendingResult = pending
         pendingStoreError = nil
+        try record(.pendingResult, operationID: operationID, content: text, retention: .pendingText, reason: .completed)
     }
 
     func copyPendingResult(copy: (String) -> Void) throws -> InsertionReceipt {
         guard let transaction else { return .copyOnly }
         try persistCandidate(operationID: transaction.operationID)
         guard let pendingResult else { return .copyOnly }
+        try record(.copy, operationID: pendingResult.operationID, content: pendingResult.text, retention: .clipboardExposed, reason: .userRequested)
         copy(pendingResult.text)
         return .copyOnly
     }
@@ -476,17 +507,22 @@ final class DictationService {
         pending.commitState = .inserting
         try pendingStore.save(pending)
         pendingResult = pending
+        try record(.destinationChoice, operationID: operationID, content: pending.text, retention: .pendingText, reason: .userRequested)
+        try record(.insertionAttempt, operationID: operationID, content: pending.text, retention: .pendingText, reason: .started)
         beginCommit(operationID: operationID)
         let receipt = await disposition(pending.text)
         if receipt.isVerified {
+            try record(.verification, operationID: operationID, content: pending.text, retention: .pendingText, reason: .completed, verifiedInsertion: true)
             try pendingStore.discard()
             pendingResult = nil
             completeCommit(operationID: operationID)
+            try record(.commit, operationID: operationID, content: pending.text, retention: .retainedHistory, reason: .completed, verifiedInsertion: true)
             return receipt
         }
         pending.commitState = .insertionFailed
         try pendingStore.save(pending)
         pendingResult = pending
+        try record(.verification, operationID: operationID, content: pending.text, retention: .pendingText, reason: .mismatch)
         failCommit(operationID: operationID, message: receipt.diagnostic)
         return receipt
     }
@@ -497,25 +533,37 @@ final class DictationService {
         guard var pending = pendingResult else {
             return .failedRecoverable(.noFocusedControl)
         }
+        if try operationJournal.recover()?.latest.verifiedInsertion == true {
+            try pendingStore.discard()
+            pendingResult = nil
+            return .failedRecoverable(.targetChanged)
+        }
+        try record(.retry, operationID: pending.operationID, content: pending.text, retention: .pendingText, reason: .userRequested)
         pending.commitState = .inserting
         try pendingStore.save(pending)
         pendingResult = pending
         beginCommit(operationID: pending.operationID)
         let receipt = await disposition(pending.text, pending.operationID)
         if receipt.verifiedInsertion?.operationID == pending.operationID {
+            try record(.verification, operationID: pending.operationID, content: pending.text, retention: .pendingText, reason: .completed, verifiedInsertion: true)
             try pendingStore.discard()
             pendingResult = nil
             completeCommit(operationID: pending.operationID)
+            try record(.commit, operationID: pending.operationID, content: pending.text, retention: .retainedHistory, reason: .completed, verifiedInsertion: true)
             return receipt
         }
         pending.commitState = .insertionFailed
         try pendingStore.save(pending)
         pendingResult = pending
+        try record(.verification, operationID: pending.operationID, content: pending.text, retention: .pendingText, reason: .mismatch)
         failCommit(operationID: pending.operationID, message: receipt.diagnostic)
         return receipt
     }
 
     func discardPendingResult() throws {
+        if let pendingResult {
+            try record(.discard, operationID: pendingResult.operationID, content: pendingResult.text, retention: .discarded, reason: .userRequested)
+        }
         try pendingStore.discard()
         pendingResult = nil
         pendingStoreError = nil
@@ -535,6 +583,7 @@ final class DictationService {
         pending.text = text
         try pendingStore.save(pending)
         pendingResult = pending
+        try record(.pendingResult, operationID: pending.operationID, content: text, retention: .pendingText, reason: .userRequested)
     }
 
     private func transition(to state: DictationTransaction.State) {
@@ -543,6 +592,29 @@ final class DictationService {
         } catch {
             assertionFailure("Invalid dictation transaction transition: \(error)")
         }
+    }
+
+    private func record(
+        _ phase: OperationPhase,
+        operationID: UUID,
+        content: String? = nil,
+        retention: RetentionDisposition,
+        reason: OperationReasonCode,
+        verifiedInsertion: Bool = false
+    ) throws {
+        let latest = try operationJournal.entries().last
+        let sameOperation = latest?.operationID == operationID
+        let version = sameOperation ? (latest?.version ?? 0) + 1 : 1
+        try operationJournal.append(.init(
+            operationID: operationID,
+            version: version,
+            predecessorVersion: sameOperation ? latest?.version : nil,
+            phase: phase,
+            content: content,
+            retention: retention,
+            reason: reason,
+            verifiedInsertion: verifiedInsertion
+        ))
     }
 
     private func fail(
