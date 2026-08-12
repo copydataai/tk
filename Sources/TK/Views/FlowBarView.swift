@@ -81,6 +81,7 @@ struct FlowBarView: View {
         .accessibilityValue(accessibilityValue)
     }
 
+    @MainActor
     private var accessibilityValue: String {
         if model.dictation.isRecording { return "Listening" }
         if model.dictation.isPreparing { return "Starting" }
