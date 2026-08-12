@@ -21,6 +21,20 @@ struct MenuBarView: View {
             model.stopSpeaking()
         }
 
+        if model.hasPendingRecovery {
+            Divider()
+            Text(model.recoveryText)
+            Button("Copy Pending Transcription") { model.copyRecoveryText() }
+            Button("Retry Insertion") { model.retryInsertion() }
+            Button("Retain to History") { model.retainRecoveryToHistory() }
+            Button("Discard Pending Transcription", role: .destructive) {
+                model.discardRecovery()
+            }
+        }
+        if model.canUndoInsertion {
+            Button("Undo Verified Insertion") { model.undoLastInsertion() }
+        }
+
         Divider()
 
         Button("Show Flow Bar") {

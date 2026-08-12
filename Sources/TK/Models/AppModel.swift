@@ -12,6 +12,7 @@ final class AppModel {
 
     private let hotKeys = GlobalHotKeyService()
     private let macText = MacTextService()
+    private let continuityMonitor = SystemContinuityMonitor()
     private var transcriptStore: TranscriptStore?
     private var transcriptStoreError: String?
 
@@ -19,6 +20,9 @@ final class AppModel {
     var accessibilityGranted = false
     var microphoneGranted = false
     var transcripts: [TranscriptRecord] = []
+    var recoveryText = ""
+    private(set) var lastInsertionReceipt: InsertionReceipt?
+    private(set) var lastDeletionReceipt: DeletionReceipt?
     var historyRetentionLimit: Int {
         didSet {
             historyRetentionLimit = max(0, historyRetentionLimit)
@@ -97,15 +101,25 @@ final class AppModel {
             transcriptStoreError = error.localizedDescription
         }
 
-        dictation.onTranscriptReady = { [weak self] text in
+        dictation.onCommitCandidate = { [weak self] operationID, text in
             Task { @MainActor in
-                await self?.saveAndInsert(text)
+                await self?.saveAndInsert(text, operationID: operationID)
             }
         }
         dictation.resolveArtifact = { [weak self] profileID in
             guard let self else { throw CancellationError() }
             return try self.profiles.artifact(forID: profileID)
         }
+        dictation.onContinuityNotification = { [weak self] notification, message in
+            self?.statusMessage = "\(notification.title): \(message)"
+        }
+        continuityMonitor.onEvent = { [weak self] event in
+            self?.dictation.handleContinuityEvent(event)
+            if ContinuityPolicy.requiresDeviceReprobe(after: event) {
+                self?.refreshPermissions()
+            }
+        }
+        continuityMonitor.start()
         hotKeys.onDictation = { [weak self] in self?.toggleDictation() }
         hotKeys.onReadSelection = { [weak self] in self?.readSelection() }
         hotKeys.start()
@@ -113,7 +127,12 @@ final class AppModel {
         refreshPermissions()
         if let transcriptStoreError {
             statusMessage = "History unavailable: \(transcriptStoreError)"
+        } else if let pendingStoreError = dictation.pendingStoreError {
+            statusMessage = pendingStoreError.localizedDescription
+        } else if dictation.pendingResult != nil {
+            statusMessage = "A pending transcription was recovered"
         }
+        recoveryText = dictation.pendingResult?.text ?? ""
         performanceSnapshot = .capture(launchStartedAt: launchStartedAt)
     }
 
@@ -123,11 +142,11 @@ final class AppModel {
             return
         }
 
-        guard ensureAccessibilityPermission() else { return }
-
         do {
             let artifact = try profiles.artifact(for: .dictation)
-            macText.rememberInsertionTarget()
+            if dictationAuthority.mayCaptureInsertionTarget {
+                macText.rememberInsertionTarget()
+            }
             dictation.toggle(language: transcriptionLanguageCode, artifact: artifact)
         } catch {
             dictation.showUnavailable(error.localizedDescription)
@@ -137,6 +156,89 @@ final class AppModel {
 
     func cancelDictation() {
         dictation.cancel()
+    }
+
+    var hasPendingRecovery: Bool { dictation.pendingResult != nil }
+    var canUndoInsertion: Bool { lastInsertionReceipt?.verifiedInsertion != nil }
+    var canRetryInsertion: Bool { dictationAuthority.mayInsertAutomatically }
+    var dictationModeDescription: String {
+        switch dictationAuthority.mode {
+        case .automaticInsertion:
+            "Automatic insertion is enabled."
+        case .copy:
+            "Copy Mode is active. Dictation needs only Microphone access; use Copy when the transcription is ready."
+        }
+    }
+
+    func copyRecoveryText() {
+        do {
+            try dictation.updatePendingText(recoveryText)
+            let receipt = try dictation.copyPendingResult { [macText] text in
+                macText.copy(text)
+            }
+            applyInsertionReceipt(receipt)
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func retryInsertion() {
+        guard dictationAuthority.mayInsertAutomatically else {
+            statusMessage = "Automatic insertion requires Accessibility permission. Copy is still available."
+            return
+        }
+        Task {
+            do {
+                try dictation.updatePendingText(recoveryText)
+                let receipt = try await dictation.retryPendingResult { [weak self] text, operationID in
+                    guard let self else { return .failedRecoverable(.noFocusedControl) }
+                    return await macText.insert(text, operationID: operationID)
+                }
+                applyInsertionReceipt(receipt)
+            } catch {
+                statusMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func discardRecovery() {
+        do {
+            try dictation.discardPendingResult()
+            recoveryText = ""
+            statusMessage = "Discarded pending transcription"
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func retainRecoveryToHistory() {
+        do {
+            guard !recoveryText.isEmpty, let transcriptStore else {
+                throw TranscriptStoreError.sqlite(transcriptStoreError ?? "The database is unavailable.")
+            }
+            if transcripts.first?.text != recoveryText {
+                try transcriptStore.insert(recoveryText)
+            }
+            transcripts = try transcriptStore.recent(limit: historyRetentionLimit)
+            try dictation.discardPendingResult()
+            recoveryText = ""
+            statusMessage = "Retained transcription in history"
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func undoLastInsertion() {
+        guard let insertion = lastInsertionReceipt?.verifiedInsertion else {
+            statusMessage = "Undo is unavailable because the prior insertion was not verified."
+            return
+        }
+        if let refusal = macText.undo(insertion) {
+            statusMessage = refusal
+        } else {
+            lastInsertionReceipt = nil
+            statusMessage = "Undid verified insertion"
+        }
     }
 
     func readSelection() {
@@ -263,12 +365,22 @@ final class AppModel {
         transcripts.removeAll { $0.id == transcript.id }
     }
 
-    func clearTranscriptHistory() throws {
+    @discardableResult
+    func clearTranscriptHistory() throws -> DeletionReceipt {
         guard let transcriptStore else {
             throw TranscriptStoreError.sqlite(transcriptStoreError ?? "The database is unavailable.")
         }
-        try transcriptStore.clear()
+        let receipt = try transcriptStore.clear(
+            selectedArtifacts: [dictation.pendingDeletionArtifact]
+        )
         transcripts.removeAll()
+        if receipt.failures.contains(where: { $0.store == .pendingDictation }) == false {
+            dictation.acknowledgePendingArtifactDeletion()
+            recoveryText = ""
+        }
+        lastDeletionReceipt = receipt
+        statusMessage = receipt.summary
+        return receipt
     }
 
     func transcriptExportData() throws -> Data {
@@ -343,29 +455,64 @@ final class AppModel {
         return true
     }
 
-    private func saveAndInsert(_ text: String) async {
+    private func saveAndInsert(_ text: String, operationID: UUID) async {
+        do {
+            saveTranscript(text, sourceOperationID: operationID)
+            guard dictationAuthority.mayInsertAutomatically else {
+                try dictation.persistCandidate(operationID: operationID)
+                recoveryText = text
+                lastInsertionReceipt = nil
+                statusMessage = "Transcription ready to copy. Clipboard contents can be read by other processes after you choose Copy."
+                return
+            }
+            let receipt = try await dictation.commitCandidate(operationID: operationID) { [weak self] text in
+                guard let self else { return .failedRecoverable(.noFocusedControl) }
+                return await macText.insert(text, operationID: operationID)
+            }
+            applyInsertionReceipt(receipt)
+        } catch {
+            statusMessage = transcriptStoreError.map {
+                "History could not be saved: \($0). Insertion also failed: \(error.localizedDescription)"
+            } ?? error.localizedDescription
+        }
+    }
+
+    private var dictationAuthority: DictationAuthority {
+        DictationAuthority(accessibilityGranted: accessibilityGranted)
+    }
+
+    private func saveTranscript(_ text: String, sourceOperationID: UUID? = nil) {
         do {
             guard let transcriptStore else {
                 throw TranscriptStoreError.sqlite(
                     transcriptStoreError ?? "The database is unavailable."
                 )
             }
-            try transcriptStore.insert(text)
+            try transcriptStore.insert(text, sourceOperationID: sourceOperationID)
             transcripts = try transcriptStore.recent(limit: historyRetentionLimit)
             transcriptStoreError = nil
         } catch {
             transcriptStoreError = error.localizedDescription
         }
+    }
 
-        do {
-            try await macText.insert(text)
+    private func applyInsertionReceipt(_ receipt: InsertionReceipt) {
+        lastInsertionReceipt = receipt
+        switch receipt {
+        case .verified:
+            recoveryText = ""
             statusMessage = transcriptStoreError.map {
                 "Inserted, but history could not be saved: \($0)"
             } ?? "Inserted transcription"
-        } catch {
-            statusMessage = transcriptStoreError.map {
-                "History could not be saved: \($0). Insertion also failed: \(error.localizedDescription)"
-            } ?? error.localizedDescription
+        case .attempted:
+            recoveryText = dictation.pendingResult?.text ?? recoveryText
+            statusMessage = "Insertion was attempted but could not be verified; text remains pending"
+        case .copyOnly:
+            recoveryText = dictation.pendingResult?.text ?? recoveryText
+            statusMessage = "Copied transcription. Clipboard contents are visible to other processes; text remains pending."
+        case .failedRecoverable:
+            recoveryText = dictation.pendingResult?.text ?? recoveryText
+            statusMessage = "Insertion target changed or is unsupported; text remains pending"
         }
     }
 

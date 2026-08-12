@@ -3,6 +3,14 @@ import XCTest
 @testable import TK
 
 final class PasteboardSnapshotTests: XCTestCase {
+    func testSuccessfulPasteEventIsAttemptedRatherThanVerified() {
+        XCTAssertEqual(InsertionReceipt.pasteResult(eventPosted: true), .attempted)
+    }
+
+    func testUnavailablePasteEventLeavesRecoverableCopyOnlyReceipt() {
+        XCTAssertEqual(InsertionReceipt.pasteResult(eventPosted: false), .copyOnly)
+    }
+
     func testRestoresClipboardWhenTemporaryContentsAreStillOwned() {
         let pasteboard = NSPasteboard(name: NSPasteboard.Name(UUID().uuidString))
         pasteboard.clearContents()

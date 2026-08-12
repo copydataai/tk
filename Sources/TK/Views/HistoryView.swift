@@ -6,6 +6,7 @@ struct HistoryView: View {
     let model: AppModel
     @State private var showingClearConfirmation = false
     @State private var errorMessage: String?
+    @State private var deletionReceiptMessage: String?
 
     var body: some View {
         Group {
@@ -30,6 +31,9 @@ struct HistoryView: View {
                                 )
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                                Text("Untrusted speech recognition, agent ineligible")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
                             Spacer()
                             Button("Delete", systemImage: "trash", role: .destructive) {
@@ -50,7 +54,7 @@ struct HistoryView: View {
                 Button("Export", systemImage: "square.and.arrow.up") {
                     exportHistory()
                 }
-                .disabled(model.transcripts.isEmpty)
+                .disabled(model.transcripts.isEmpty && !model.hasPendingRecovery)
 
                 Button("Clear All", systemImage: "trash", role: .destructive) {
                     showingClearConfirmation = true
@@ -67,7 +71,7 @@ struct HistoryView: View {
                 clearHistory()
             }
         } message: {
-            Text("This cannot be undone.")
+            Text("Clears transcript rows, checkpoints and truncates SQLite WAL data, and removes selected corrupt archives and the pending dictation artifact. SSD secure erasure, snapshots, and backups are excluded.")
         }
         .alert("History Error", isPresented: Binding(
             get: { errorMessage != nil },
@@ -76,6 +80,14 @@ struct HistoryView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(errorMessage ?? "An unknown error occurred.")
+        }
+        .alert("Deletion Receipt", isPresented: Binding(
+            get: { deletionReceiptMessage != nil },
+            set: { if !$0 { deletionReceiptMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(deletionReceiptMessage ?? "")
         }
     }
 
@@ -89,7 +101,10 @@ struct HistoryView: View {
 
     private func clearHistory() {
         do {
-            try model.clearTranscriptHistory()
+            let receipt = try model.clearTranscriptHistory()
+            let stores = receipt.successes.map { $0.store.rawValue }.joined(separator: ", ")
+            let exclusions = receipt.exclusions.joined(separator: " ")
+            deletionReceiptMessage = "\(receipt.summary) Stores: \(stores). Exclusions: \(exclusions)"
         } catch {
             errorMessage = error.localizedDescription
         }

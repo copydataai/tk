@@ -9,6 +9,16 @@ struct CaptureSetup: @unchecked Sendable {
 }
 
 enum MicrophoneCapture {
+    struct Limits: Sendable {
+        let maxDuration: TimeInterval
+        let maxFileSize: Int64
+
+        static let production = Self(
+            maxDuration: 15 * 60,
+            maxFileSize: 64 * 1024 * 1024
+        )
+    }
+
     static func prepare() throws -> CaptureSetup {
         let discovery = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.microphone, .external],
@@ -76,9 +86,35 @@ enum MicrophoneCapture {
         level > -120
     }
 
+    static func isCapturedDeviceDisconnect(
+        disconnectedDeviceID: String,
+        capturedDeviceID: String?
+    ) -> Bool {
+        disconnectedDeviceID == capturedDeviceID
+    }
+
+    static func shouldRetainOperationAudio(
+        recordingURL: URL,
+        preservedAudioURL: URL?
+    ) -> Bool {
+        recordingURL.standardizedFileURL == preservedAudioURL?.standardizedFileURL
+    }
+
     static func recordingSucceeded(_ error: Error?) -> Bool {
+        guard !recordingLimitExceeded(error) else { return false }
         guard let error = error as NSError? else { return true }
         return error.userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool == true
+    }
+
+    static func recordingLimitExceeded(_ error: Error?) -> Bool {
+        guard let error = error as NSError?, error.domain == AVFoundationErrorDomain else { return false }
+        return error.code == AVError.maximumDurationReached.rawValue
+            || error.code == AVError.maximumFileSizeReached.rawValue
+    }
+
+    static func apply(_ limits: Limits, to output: AVCaptureAudioFileOutput) {
+        output.maxRecordedDuration = CMTime(seconds: limits.maxDuration, preferredTimescale: 1_000)
+        output.maxRecordedFileSize = limits.maxFileSize
     }
 
     static func convertToWhisperWAV(_ recordingURL: URL, outputURL: URL) throws {

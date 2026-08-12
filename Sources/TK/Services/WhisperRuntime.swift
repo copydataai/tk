@@ -1,104 +1,56 @@
-import AppKit
 import AVFoundation
-import Darwin
 import Foundation
 
 actor WhisperRuntime {
     static let shared = WhisperRuntime()
 
-    private var process: Process?
-    private var serverURL: URL?
+    private static let maxAudioBytes = 64 * 1024 * 1024
+    private static let maxDuration: TimeInterval = 15 * 60
+
+    private var session: LocalInferenceSession?
     private var activeProfileID: String?
-    private var terminationObserver: NSObjectProtocol?
-    private var isStarting = false
+
+    func invalidate() {
+        session = nil
+        activeProfileID = nil
+    }
 
     func transcribe(
         wavURL: URL,
         language: String = "auto",
         artifact: SpeechArtifact
     ) async throws -> String {
-        let wavURL = try Self.validatedWAV(wavURL)
+        let audio = try Self.validatedWAV(wavURL)
         guard !language.isEmpty,
               language.count <= 16,
               language.allSatisfy({ $0.isASCII && ($0.isLetter || $0 == "-") }) else {
             throw WhisperRuntimeError.invalidLanguage
         }
 
-        let serverURL = try await readyServerURL(artifact: artifact)
-        let boundary = "tk-\(UUID().uuidString)"
-        var body = Data()
-        body.append("--\(boundary)\r\n")
-        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"input.wav\"\r\n")
-        body.append("Content-Type: audio/wav\r\n\r\n")
-        body.append(try Data(contentsOf: wavURL))
-        body.append("\r\n")
-        for (name, value) in [
-            ("language", language),
-            ("response_format", "json"),
-            ("vad", "true"),
-            ("no_timestamps", "true"),
-        ] {
-            body.append("--\(boundary)\r\n")
-            body.append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n")
-            body.append("\(value)\r\n")
+        let session = try inferenceSession(artifact: artifact)
+        do {
+            return try await session.transcribe(
+                audioURL: audio.url,
+                declaredDuration: audio.duration,
+                language: language
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch LocalInferenceSession.Error.busy {
+            throw WhisperRuntimeError.inferenceBusy
+        } catch LocalInferenceSession.Error.runtimeMissing {
+            throw WhisperRuntimeError.runtimeMissing
+        } catch {
+            throw WhisperRuntimeError.inferenceFailed(error.localizedDescription)
         }
-        body.append("--\(boundary)--\r\n")
-
-        var request = URLRequest(url: serverURL.appendingPathComponent("inference"))
-        request.httpMethod = "POST"
-        request.timeoutInterval = 600
-        request.setValue(
-            "multipart/form-data; boundary=\(boundary)",
-            forHTTPHeaderField: "Content-Type"
-        )
-        let (data, response) = try await URLSession.shared.upload(for: request, from: body)
-        guard let response = response as? HTTPURLResponse else {
-            throw WhisperRuntimeError.invalidResponse
-        }
-        guard (200..<300).contains(response.statusCode) else {
-            let detail = (try? JSONDecoder().decode(ServerError.self, from: data).error)
-                ?? HTTPURLResponse.localizedString(forStatusCode: response.statusCode)
-            throw WhisperRuntimeError.inferenceFailed(detail)
-        }
-        guard let text = try? JSONDecoder().decode(InferenceResponse.self, from: data).text else {
-            throw WhisperRuntimeError.invalidResponse
-        }
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    deinit {
-        if let process, process.isRunning {
-            kill(process.processIdentifier, SIGKILL)
-        }
-        if let terminationObserver {
-            NotificationCenter.default.removeObserver(terminationObserver)
-        }
-        try? FileManager.default.removeItem(at: Self.pidURL)
-    }
-
-    private func readyServerURL(artifact: SpeechArtifact) async throws -> URL {
-        if process?.isRunning == true, activeProfileID == artifact.profileID, let serverURL {
-            return serverURL
-        }
-        while isStarting {
-            try await Task.sleep(for: .milliseconds(50))
-            if process?.isRunning == true,
-               activeProfileID == artifact.profileID,
-               let serverURL {
-                return serverURL
-            }
-        }
-
-        isStarting = true
-        defer {
-            isStarting = false
-            if serverURL == nil {
-                stopServer()
-            }
+    private func inferenceSession(artifact: SpeechArtifact) throws -> LocalInferenceSession {
+        if activeProfileID == artifact.profileID, let session {
+            return session
         }
         let resources = Bundle.main.resourceURL
-        let executableURL = resources?.appendingPathComponent("whisper-server")
-        let modelURL = artifact.url
+        let executableURL = resources?.appendingPathComponent("whisper-cli")
         let modelDirectory = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -112,128 +64,50 @@ actor WhisperRuntime {
               FileManager.default.isExecutableFile(atPath: executableURL.path) else {
             throw WhisperRuntimeError.runtimeMissing
         }
-        let staleServer = ResidentProcessRecord.read(
-            from: Self.pidURL,
-            legacyExecutableURL: executableURL
-        )
-        stopServer()
-        staleServer?.terminateIfOrphaned()
-        guard FileManager.default.fileExists(atPath: modelURL.path),
+        guard FileManager.default.fileExists(atPath: artifact.url.path),
               FileManager.default.fileExists(atPath: vadModelURL.path) else {
             throw WhisperRuntimeError.modelsMissing
         }
 
-        for _ in 0..<8 {
-            let port = Int.random(in: 49_152...65_535)
-            let url = URL(string: "http://127.0.0.1:\(port)")!
-            let process = Process()
-            process.executableURL = executableURL
-            process.arguments = [
-                "--model", modelURL.path,
-                "--host", "127.0.0.1",
-                "--port", String(port),
-                "--language", "auto",
-                "--vad",
-                "--vad-model", vadModelURL.path,
-                "--no-timestamps",
-            ]
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-            try process.run()
-            do {
-                try ResidentProcessRecord(
-                    processIdentifier: process.processIdentifier,
-                    executableURL: executableURL
-                ).write(to: Self.pidURL)
-            } catch {
-                kill(process.processIdentifier, SIGKILL)
-                throw WhisperRuntimeError.startupFailed
-            }
-            self.process = process
-            registerTerminationCleanup(for: process)
-
-            if try await waitUntilReady(process: process, serverURL: url) {
-                serverURL = url
-                activeProfileID = artifact.profileID
-                return url
-            }
-            stopServer()
-        }
-        throw WhisperRuntimeError.startupFailed
+        let session = LocalInferenceSession(
+            executableURL: executableURL,
+            modelURL: artifact.url,
+            vadModelURL: vadModelURL
+        )
+        self.session = session
+        activeProfileID = artifact.profileID
+        return session
     }
 
-    private func waitUntilReady(process: Process, serverURL: URL) async throws -> Bool {
-        let deadline = Date().addingTimeInterval(120)
-        let healthURL = serverURL.appendingPathComponent("health")
-        while Date() < deadline {
-            try Task.checkCancellation()
-            guard process.isRunning else { return false }
-            var request = URLRequest(url: healthURL)
-            request.timeoutInterval = 1
-            if let (data, response) = try? await URLSession.shared.data(for: request),
-               process.isRunning,
-               (response as? HTTPURLResponse)?.statusCode == 200,
-               (try? JSONDecoder().decode(HealthResponse.self, from: data).status) == "ok" {
-                return true
-            }
-            try await Task.sleep(for: .milliseconds(100))
-        }
-        return false
-    }
-
-    private func registerTerminationCleanup(for process: Process) {
-        terminationObserver = NotificationCenter.default.addObserver(
-            forName: Notification.Name("NSApplicationWillTerminateNotification"),
-            object: nil,
-            queue: nil
-        ) { [weak process] _ in
-            if let process, process.isRunning {
-                kill(process.processIdentifier, SIGKILL)
-            }
-            try? FileManager.default.removeItem(at: Self.pidURL)
-        }
-    }
-
-    private func stopServer() {
-        if let process, process.isRunning {
-            kill(process.processIdentifier, SIGKILL)
-        }
-        process = nil
-        serverURL = nil
-        activeProfileID = nil
-        if let terminationObserver {
-            NotificationCenter.default.removeObserver(terminationObserver)
-            self.terminationObserver = nil
-        }
-        try? FileManager.default.removeItem(at: Self.pidURL)
-    }
-
-    private nonisolated static func validatedWAV(_ url: URL) throws -> URL {
+    private nonisolated static func validatedWAV(_ url: URL) throws -> ValidatedAudio {
         let url = url.standardizedFileURL
         guard url.isFileURL,
-              (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+              let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
+              values.isRegularFile == true,
+              let fileSize = values.fileSize,
+              fileSize <= maxAudioBytes else {
             throw WhisperRuntimeError.invalidAudio
         }
         let file = try FileHandle(forReadingFrom: url)
         defer { try? file.close() }
         let header = try file.read(upToCount: 12) ?? Data()
-        let format = try AVAudioFile(forReading: url).fileFormat
+        let audioFile = try AVAudioFile(forReading: url)
+        let format = audioFile.fileFormat
         guard header.count == 12,
               String(data: header[0..<4], encoding: .ascii) == "RIFF",
               String(data: header[8..<12], encoding: .ascii) == "WAVE",
               format.sampleRate == 16_000,
               format.channelCount == 1,
-              format.commonFormat == .pcmFormatInt16 else {
+              format.commonFormat == .pcmFormatInt16,
+              audioFile.length > 0 else {
             throw WhisperRuntimeError.invalidAudio
         }
-        return url
-    }
-
-    private nonisolated static var pidURL: URL {
-        FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        )[0].appendingPathComponent("tk/whisper-server.pid")
+        let duration = Double(audioFile.length) / format.sampleRate
+        guard duration <= maxDuration else { throw WhisperRuntimeError.invalidAudio }
+        return ValidatedAudio(
+            url: url,
+            duration: duration
+        )
     }
 
     private nonisolated static func modelURL(
@@ -247,52 +121,35 @@ actor WhisperRuntime {
         }
         return fallbackDirectory.appendingPathComponent(name)
     }
-
 }
 
-private struct HealthResponse: Decodable {
-    let status: String
-}
-
-private struct InferenceResponse: Decodable {
-    let text: String
-}
-
-private struct ServerError: Decodable {
-    let error: String
+private struct ValidatedAudio {
+    let url: URL
+    let duration: TimeInterval
 }
 
 private enum WhisperRuntimeError: LocalizedError {
+    case inferenceBusy
+    case inferenceFailed(String)
     case invalidAudio
     case invalidLanguage
-    case invalidResponse
-    case inferenceFailed(String)
     case modelsMissing
     case runtimeMissing
-    case startupFailed
 
     var errorDescription: String? {
         switch self {
+        case .inferenceBusy:
+            "Whisper is already processing a dictation"
+        case .inferenceFailed(let detail):
+            "Whisper failed: \(detail)"
         case .invalidAudio:
             "Whisper requires a local mono 16-bit 16 kHz WAV file"
         case .invalidLanguage:
             "The transcription language is invalid"
-        case .invalidResponse:
-            "Whisper returned an invalid response"
-        case .inferenceFailed(let detail):
-            "Whisper failed: \(detail)"
         case .modelsMissing:
-            "Whisper models are missing — build with script/build_and_run.sh"
+            "Whisper models are missing - build with script/build_and_run.sh"
         case .runtimeMissing:
-            "Whisper runtime is missing — build with script/build_and_run.sh"
-        case .startupFailed:
-            "Whisper could not start its local server"
+            "Whisper runtime is missing - build with script/build_and_run.sh"
         }
-    }
-}
-
-private extension Data {
-    mutating func append(_ string: String) {
-        append(Data(string.utf8))
     }
 }

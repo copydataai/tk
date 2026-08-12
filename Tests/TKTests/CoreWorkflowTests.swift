@@ -4,6 +4,104 @@ import XCTest
 
 final class CoreWorkflowTests: XCTestCase {
     @MainActor
+    func testInsertionFailureAndRelaunchRecoverExactlyThePendingText() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("pending-dictation.json")
+        let store = PendingDictationStore(fileURL: fileURL)
+        let operationID = UUID()
+        let service = DictationService(pendingStore: store)
+        service.acceptRecognizedCandidate(
+            operationID: operationID,
+            text: "words that must survive",
+            profileID: "profile",
+            createdAt: Date(timeIntervalSince1970: 42)
+        )
+
+        let receipt = try await service.commitCandidate(operationID: operationID) { _ in
+            .failedRecoverable(.noFocusedControl)
+        }
+
+        XCTAssertEqual(receipt, .failedRecoverable(.noFocusedControl))
+        let relaunched = DictationService(
+            pendingStore: PendingDictationStore(fileURL: fileURL)
+        )
+        XCTAssertEqual(relaunched.pendingResult?.text, "words that must survive")
+        XCTAssertEqual(relaunched.pendingResult?.commitState, .insertionFailed)
+    }
+
+    @MainActor
+    func testSuccessfulDispositionAndExplicitDiscardRemovePendingArtifact() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = PendingDictationStore(
+            fileURL: directory.appendingPathComponent("pending-dictation.json")
+        )
+        let service = DictationService(pendingStore: store)
+        let firstID = UUID()
+        service.acceptRecognizedCandidate(
+            operationID: firstID,
+            text: "insert me",
+            profileID: "profile"
+        )
+
+        let receipt = try await service.commitCandidate(operationID: firstID) { text in
+            XCTAssertEqual(text, "insert me")
+            XCTAssertEqual(try? store.load()?.commitState, .inserting)
+            return self.verifiedReceipt(operationID: firstID, text: text)
+        }
+        XCTAssertEqual(receipt.operationID, firstID)
+        XCTAssertNil(service.pendingResult)
+
+        let secondID = UUID()
+        service.acceptRecognizedCandidate(
+            operationID: secondID,
+            text: "discard me",
+            profileID: "profile"
+        )
+        try service.persistCandidate(operationID: secondID)
+        try service.discardPendingResult()
+        XCTAssertNil(service.pendingResult)
+        XCTAssertNil(try store.load())
+    }
+
+    @MainActor
+    func testEveryNonverifiedReceiptPreservesPendingText() async throws {
+        let receipts: [InsertionReceipt] = [
+            .attempted,
+            .copyOnly,
+            .failedRecoverable(.targetChanged)
+        ]
+
+        for expectedReceipt in receipts {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let store = PendingDictationStore(
+                fileURL: directory.appendingPathComponent("pending-dictation.json")
+            )
+            let service = DictationService(pendingStore: store)
+            let operationID = UUID()
+            service.acceptRecognizedCandidate(
+                operationID: operationID,
+                text: "keep until verified",
+                profileID: "profile"
+            )
+
+            let receipt = try await service.commitCandidate(operationID: operationID) { _ in
+                expectedReceipt
+            }
+
+            XCTAssertEqual(receipt, expectedReceipt)
+            XCTAssertEqual(service.pendingResult?.text, "keep until verified")
+            XCTAssertEqual(service.pendingResult?.commitState, .insertionFailed)
+            XCTAssertEqual(try store.load()?.text, "keep until verified")
+        }
+    }
+
+    @MainActor
     func testDictationWithoutAnAvailableProfileExplainsHowToRecover() {
         let service = DictationService()
 
@@ -15,12 +113,13 @@ final class CoreWorkflowTests: XCTestCase {
     }
 
     func testCancellingPreparationReturnsDictationToIdle() {
-        var activity = DictationActivity()
-        activity.beginPreparing()
+        var transaction = DictationTransaction(profileID: "profile")
+        var activity = DictationActivity(transaction: transaction)
 
         XCTAssertTrue(activity.isPreparing)
 
-        activity.cancelPreparation()
+        try! transaction.transition(to: .cancelled)
+        activity = DictationActivity(transaction: transaction)
 
         XCTAssertFalse(activity.isPreparing)
         XCTAssertFalse(activity.isRecording)
@@ -28,29 +127,35 @@ final class CoreWorkflowTests: XCTestCase {
     }
 
     func testFinishingARecordingMovesThroughFinalizingAndTranscribing() {
-        var activity = DictationActivity()
-        activity.beginPreparing()
-        activity.beginRecording()
-        activity.finishRecording(shouldTranscribe: true)
+        var transaction = DictationTransaction(profileID: "profile")
+        try! transaction.transition(to: .recording)
+        try! transaction.transition(to: .finalizing)
+        var activity = DictationActivity(transaction: transaction)
 
         XCTAssertTrue(activity.isFinalizing)
+        XCTAssertFalse(activity.isTranscribing)
+
+        try! transaction.transition(to: .recognizing)
+        activity = DictationActivity(transaction: transaction)
+        XCTAssertFalse(activity.isFinalizing)
         XCTAssertTrue(activity.isTranscribing)
 
-        XCTAssertTrue(activity.completeRecording())
-        XCTAssertFalse(activity.isFinalizing)
-        activity.completeTranscription()
+        try! transaction.setCandidateText("hello")
+        activity = DictationActivity(transaction: transaction)
         XCTAssertFalse(activity.isTranscribing)
     }
 
     func testCancellingARecordingFinalizesWithoutTranscription() {
-        var activity = DictationActivity()
-        activity.beginPreparing()
-        activity.beginRecording()
-        activity.finishRecording(shouldTranscribe: false)
+        var transaction = DictationTransaction(profileID: "profile")
+        try! transaction.transition(to: .recording)
+        try! transaction.transition(to: .finalizing)
+        var activity = DictationActivity(transaction: transaction)
 
         XCTAssertTrue(activity.isFinalizing)
         XCTAssertFalse(activity.isTranscribing)
-        XCTAssertFalse(activity.completeRecording())
+
+        try! transaction.transition(to: .cancelled)
+        activity = DictationActivity(transaction: transaction)
         XCTAssertFalse(activity.isFinalizing)
     }
 
@@ -68,11 +173,46 @@ final class CoreWorkflowTests: XCTestCase {
         XCTAssertEqual(actions, ["dictation", "reading"])
     }
 
-    func testOnboardingRequiresBothPermissions() {
+    func testOnboardingRequiresOnlyMicrophoneForCopyMode() {
         XCTAssertFalse(OnboardingReadiness(accessibilityGranted: false, microphoneGranted: false).canGetStarted)
         XCTAssertFalse(OnboardingReadiness(accessibilityGranted: true, microphoneGranted: false).canGetStarted)
-        XCTAssertFalse(OnboardingReadiness(accessibilityGranted: false, microphoneGranted: true).canGetStarted)
+        XCTAssertTrue(OnboardingReadiness(accessibilityGranted: false, microphoneGranted: true).canGetStarted)
         XCTAssertTrue(OnboardingReadiness(accessibilityGranted: true, microphoneGranted: true).canGetStarted)
+    }
+
+    func testCopyModeNeverAuthorizesAccessibilityWork() {
+        let authority = DictationAuthority(accessibilityGranted: false)
+
+        XCTAssertEqual(authority.mode, .copy)
+        XCTAssertFalse(authority.mayCaptureInsertionTarget)
+        XCTAssertFalse(authority.mayInsertAutomatically)
+        XCTAssertTrue(authority.mayCopyToClipboard)
+    }
+
+    @MainActor
+    func testCopyingAReadyResultReturnsCopyOnlyAndKeepsPendingText() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = PendingDictationStore(
+            fileURL: directory.appendingPathComponent("pending-dictation.json")
+        )
+        let service = DictationService(pendingStore: store)
+        let operationID = UUID()
+        service.acceptRecognizedCandidate(
+            operationID: operationID,
+            text: "copy me",
+            profileID: "profile"
+        )
+
+        let receipt = try service.copyPendingResult { text in
+            XCTAssertEqual(text, "copy me")
+        }
+
+        XCTAssertEqual(receipt, .copyOnly)
+        XCTAssertEqual(service.transaction?.state, .resultReady)
+        XCTAssertEqual(service.pendingResult?.text, "copy me")
+        XCTAssertEqual(try store.load()?.text, "copy me")
     }
 
     func testAccessibilityValueRejectsNonElementValues() {
@@ -83,5 +223,57 @@ final class CoreWorkflowTests: XCTestCase {
         let systemElement = AXUIElementCreateSystemWide()
 
         XCTAssertNotNil(MacAccessibility.element(from: systemElement))
+    }
+
+    @MainActor
+    func testRecognitionInterruptionRemovesAudioAndReportsThatItWasNotRetained() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let operationID = UUID()
+        let cleaner = OperationArtifactCleaner(rootURL: directory)
+        let artifacts = try cleaner.createOperation(operationID: operationID)
+        try Data("audio".utf8).write(to: artifacts.recordingURL)
+        var transaction = DictationTransaction(operationID: operationID, profileID: "profile")
+        try transaction.transition(to: .recording)
+        try transaction.transition(to: .finalizing)
+        transaction.setAudioState(.available(artifacts.recordingURL))
+        try transaction.transition(to: .recognizing)
+        let service = DictationService(
+            artifactCleaner: cleaner,
+            transaction: transaction
+        )
+        var reportedMessage: String?
+        service.onContinuityNotification = { _, message in reportedMessage = message }
+
+        service.handleContinuityEvent(.willSleep)
+
+        XCTAssertEqual(
+            reportedMessage,
+            "Recognition was interrupted while this Mac slept. Audio was not retained."
+        )
+        XCTAssertEqual(service.transaction?.audioState, .discarded)
+        XCTAssertNil(service.preservedAudioURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: artifacts.directoryURL.path))
+    }
+
+    private func verifiedReceipt(operationID: UUID, text: String) -> InsertionReceipt {
+        .verified(.init(
+            operationID: operationID,
+            target: .init(
+                processIdentifier: 1,
+                bundleIdentifier: "test",
+                role: "AXTextArea",
+                subrole: nil,
+                windowDigest: "window",
+                elementIdentity: 1,
+                readableStateDigest: InsertionTargetFingerprint.digest(text)
+            ),
+            insertedRange: NSRange(location: 0, length: text.utf16.count),
+            resultingSelectionRange: NSRange(location: text.utf16.count, length: 0),
+            resultingValue: text,
+            replacedText: "",
+            surroundingStateDigest: InsertionTargetFingerprint.digest("")
+        ))
     }
 }

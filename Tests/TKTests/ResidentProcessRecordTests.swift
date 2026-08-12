@@ -15,6 +15,7 @@ final class ResidentProcessRecordTests: XCTestCase {
         XCTAssertEqual(ResidentProcessRecord.read(from: recordURL), record)
 
         try Data("43\n".utf8).write(to: recordURL)
+        XCTAssertNil(ResidentProcessRecord.read(from: recordURL))
         XCTAssertEqual(
             ResidentProcessRecord.read(from: recordURL, legacyExecutableURL: executableURL),
             ResidentProcessRecord(processIdentifier: 43, executableURL: executableURL)

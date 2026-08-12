@@ -71,6 +71,9 @@ private struct GeneralSettings: View {
                 Text("Auto detects the spoken language. Choose one to improve recognition when you know it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Text(model.dictationModeDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section("History") {
                 Picker("Keep transcripts", selection: $model.historyRetentionLimit) {
@@ -80,7 +83,10 @@ private struct GeneralSettings: View {
                     Text("Last 100").tag(100)
                     Text("Last 500").tag(500)
                 }
-                Text("Microphone audio is never retained. Transcript retention changes apply immediately.")
+                Text("Microphone audio is never retained. Stored transcripts are marked as untrusted speech recognition and ineligible for agent use. Retention changes apply immediately and do not remove a separately pending recovery result.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Clear All uses SQLite secure_delete, checkpoints and truncates the WAL, and reports selected application-controlled files. It does not claim SSD secure erasure or deletion from snapshots or backups.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

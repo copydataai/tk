@@ -5,25 +5,64 @@ import Observation
 @MainActor
 @Observable
 final class DictationService {
-    private var activity = DictationActivity()
+    private var activity: DictationActivity { DictationActivity(transaction: transaction) }
+    private(set) var transaction: DictationTransaction?
     var isRecording: Bool { activity.isRecording }
     var isTranscribing: Bool { activity.isTranscribing }
     private(set) var transcript = ""
     private(set) var status = "Press the shortcut to dictate"
     private(set) var activeProfileID: String?
     private(set) var lastStartMilliseconds: Double?
+    private let pendingStore: PendingDictationStore
+    private let artifactCleaner: OperationArtifactCleaner
+    private(set) var pendingResult: PendingDictation?
+    private(set) var pendingStoreError: Error?
+    private(set) var artifactCleanupReport: OperationArtifactCleanupReport
+    private(set) var preservedAudioURL: URL?
+    private(set) var lastContinuityNotification: ContinuityNotification?
 
     var onTranscriptReady: ((String) -> Void)?
+    var onCommitCandidate: ((UUID, String) -> Void)?
     var resolveArtifact: ((String) throws -> SpeechArtifact)?
+    var onContinuityNotification: ((ContinuityNotification, String) -> Void)?
 
     @ObservationIgnored private var captureSession: AVCaptureSession?
     @ObservationIgnored private var captureOutput: AVCaptureAudioFileOutput?
     @ObservationIgnored private var recordingDelegate: RecordingDelegate?
     @ObservationIgnored private var recordingLanguage: String?
+    @ObservationIgnored private var capturedDeviceID: String?
+    @ObservationIgnored private var recognitionTask: Task<Void, Never>?
     var isPreparing: Bool { activity.isPreparing }
     var isFinalizing: Bool { activity.isFinalizing }
     @ObservationIgnored private var preparationID: UUID?
     @ObservationIgnored private var preparationStartedAt: ContinuousClock.Instant?
+
+    init(
+        pendingStore: PendingDictationStore? = nil,
+        artifactCleaner: OperationArtifactCleaner = OperationArtifactCleaner(),
+        transaction: DictationTransaction? = nil
+    ) {
+        self.artifactCleaner = artifactCleaner
+        self.transaction = transaction
+        artifactCleanupReport = artifactCleaner.cleanupStale()
+        let resolvedStore: PendingDictationStore
+        do {
+            resolvedStore = try pendingStore ?? PendingDictationStore.applicationSupport()
+        } catch {
+            resolvedStore = PendingDictationStore(
+                fileURL: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("tk-unavailable-pending-dictation")
+            )
+            pendingStoreError = error
+        }
+        self.pendingStore = resolvedStore
+        guard pendingStoreError == nil else { return }
+        do {
+            pendingResult = try resolvedStore.load()
+        } catch {
+            pendingStoreError = error
+        }
+    }
 
     func toggle(language: String? = nil, artifact: SpeechArtifact? = nil) {
         guard !isTranscribing else {
@@ -59,8 +98,14 @@ final class DictationService {
             cancelPreparation()
             return
         }
-        guard isRecording else { return }
-        stopRecording(shouldTranscribe: false)
+        if isRecording {
+            stopRecording(shouldTranscribe: false)
+            status = "Dictation cancelled"
+            return
+        }
+        guard let state = transaction?.state,
+              [.recording, .finalizing, .recognizing].contains(state) else { return }
+        transition(to: .cancelled)
         status = "Dictation cancelled"
     }
 
@@ -68,7 +113,10 @@ final class DictationService {
         let operationID = UUID()
         preparationID = operationID
         preparationStartedAt = .now
-        activity.beginPreparing()
+        transaction = DictationTransaction(
+            operationID: operationID,
+            profileID: artifact.profileID
+        )
         status = "Waiting for microphone access…"
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
@@ -89,7 +137,11 @@ final class DictationService {
                         )
                     } else {
                         self.preparationID = nil
-                        self.activity.cancelPreparation()
+                        self.fail(
+                            kind: .permission,
+                            message: "Microphone permission is required",
+                            recoverable: true
+                        )
                         self.activeProfileID = nil
                         self.status = "Microphone permission is required"
                     }
@@ -97,7 +149,11 @@ final class DictationService {
             }
         default:
             preparationID = nil
-            activity.cancelPreparation()
+            fail(
+                kind: .permission,
+                message: "Microphone permission is required",
+                recoverable: true
+            )
             activeProfileID = nil
             status = "Microphone permission is required"
         }
@@ -116,9 +172,7 @@ final class DictationService {
                     Task.detached { setup.session.stopRunning() }
                     return
                 }
-                let url = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("tk-\(UUID().uuidString)")
-                    .appendingPathExtension("caf")
+                let artifacts = try artifactCleaner.createOperation(operationID: operationID)
                 let delegate = RecordingDelegate { [weak self] url, error in
                     Task { @MainActor in
                         self?.recordingDidFinish(at: url, error: error)
@@ -127,30 +181,34 @@ final class DictationService {
 
                 captureSession = setup.session
                 captureOutput = setup.output
+                capturedDeviceID = setup.deviceID
                 recordingDelegate = delegate
                 recordingLanguage = language
                 activeProfileID = profileID
                 UserDefaults.standard.set(setup.deviceID, forKey: "workingMicrophoneID")
                 transcript = ""
-                activity.beginRecording()
+                transaction?.setAudioState(.capturing)
+                transition(to: .recording)
                 if let preparationStartedAt {
                     lastStartMilliseconds = preparationStartedAt.duration(to: .now).dictationMilliseconds
                 }
+                MicrophoneCapture.apply(.production, to: setup.output)
                 setup.output.startRecording(
-                    to: url,
+                    to: artifacts.recordingURL,
                     outputFileType: .caf,
                     recordingDelegate: delegate
                 )
                 status = "Listening on \(setup.deviceName) — press the shortcut again to insert"
             } catch {
                 guard preparationID == operationID else { return }
+                artifactCleaner.removeOperation(operationID: operationID)
                 activeProfileID = nil
+                fail(kind: .capture, message: error.localizedDescription, recoverable: true)
                 status = "Could not start the microphone: \(error.localizedDescription)"
             }
             if preparationID == operationID {
                 preparationID = nil
                 preparationStartedAt = nil
-                activity.cancelPreparation()
             }
         }
     }
@@ -158,7 +216,7 @@ final class DictationService {
     private func cancelPreparation() {
         preparationID = nil
         preparationStartedAt = nil
-        activity.cancelPreparation()
+        transition(to: .cancelled)
         activeProfileID = nil
         status = "Dictation cancelled"
     }
@@ -170,47 +228,66 @@ final class DictationService {
     }
 
     private func stopRecording(shouldTranscribe: Bool) {
-        activity.finishRecording(shouldTranscribe: shouldTranscribe)
+        transition(to: .finalizing)
+        if !shouldTranscribe {
+            transition(to: .cancelled)
+        }
         captureOutput?.stopRecording()
     }
 
     private func recordingDidFinish(at recordingURL: URL, error: Error?) {
-        let shouldTranscribe = activity.completeRecording()
+        let shouldTranscribe = transaction?.state == .finalizing
         let language = recordingLanguage
         let profileID = activeProfileID
         let session = captureSession
         captureSession = nil
         captureOutput = nil
+        capturedDeviceID = nil
         recordingDelegate = nil
         recordingLanguage = nil
         Task.detached { session?.stopRunning() }
 
         guard shouldTranscribe else {
-            try? FileManager.default.removeItem(at: recordingURL)
+            if let operationID = transaction?.operationID {
+                artifactCleaner.removeOperation(operationID: operationID)
+            }
+            transaction?.setAudioState(.discarded)
             activeProfileID = nil
             return
         }
         guard MicrophoneCapture.recordingSucceeded(error) else {
-            try? FileManager.default.removeItem(at: recordingURL)
-            activity.completeTranscription()
+            if let operationID = transaction?.operationID {
+                artifactCleaner.removeOperation(operationID: operationID)
+            }
+            transaction?.setAudioState(.discarded)
+            fail(kind: .capture, message: error!.localizedDescription, recoverable: true)
             activeProfileID = nil
             status = "Could not record audio: \(error!.localizedDescription)"
             return
         }
 
         status = "Transcribing locally…"
+        transaction?.setAudioState(.available(recordingURL))
+        transition(to: .recognizing)
+        let operationID = transaction?.operationID
 
-        Task {
-            let wavURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("tk-\(UUID().uuidString)")
-                .appendingPathExtension("wav")
+        recognitionTask = Task {
+            guard let operationID else { return }
+            let wavURL = recordingURL.deletingLastPathComponent().appendingPathComponent("speech.wav")
             defer {
-                try? FileManager.default.removeItem(at: recordingURL)
-                try? FileManager.default.removeItem(at: wavURL)
-                activity.completeTranscription()
+                if !MicrophoneCapture.shouldRetainOperationAudio(
+                    recordingURL: recordingURL,
+                    preservedAudioURL: preservedAudioURL
+                ) {
+                    artifactCleaner.removeOperation(operationID: operationID)
+                    transaction?.setAudioState(.discarded)
+                }
                 activeProfileID = nil
+                recognitionTask = nil
             }
             do {
+                guard transaction?.operationID == operationID,
+                      transaction?.state == .recognizing else { return }
                 guard let profileID, let resolveArtifact else {
                     throw SpeechProfileError.unavailable(
                         "The selected dictation profile is unavailable. Choose another profile in Settings."
@@ -225,16 +302,261 @@ final class DictationService {
                     language: language ?? "auto",
                     artifact: artifact
                 )
+                guard transaction?.operationID == operationID,
+                      transaction?.state == .recognizing else { return }
                 transcript = text
+                try transaction?.setCandidateText(text)
                 if text.isEmpty {
+                    transition(to: .discarded)
                     status = "Nothing heard"
                 } else {
                     onTranscriptReady?(text)
+                    onCommitCandidate?(operationID, text)
                     status = "Transcription ready"
                 }
+            } catch is CancellationError {
             } catch {
+                if transaction?.operationID == operationID,
+                   transaction?.state == .recognizing {
+                    fail(kind: .recognition, message: error.localizedDescription, recoverable: true)
+                }
                 status = "Dictation failed: \(error.localizedDescription)"
             }
+        }
+    }
+
+    func handleContinuityEvent(_ event: SystemContinuityEvent) {
+        if ContinuityPolicy.requiresDeviceReprobe(after: event) {
+            Task { await WhisperRuntime.shared.invalidate() }
+        }
+        let decision = ContinuityPolicy.decision(
+            for: event,
+            transactionState: transaction?.state,
+            capturedDeviceID: capturedDeviceID
+        )
+        switch decision {
+        case .continueCurrentOperation:
+            return
+        case .continueDegraded(let message):
+            status = message
+            notify(.degraded, message: message)
+        case .interruptRecoverably(let message, let preserveAudio):
+            let reportedMessage = interruptContinuity(message: message, preserveAudio: preserveAudio)
+            notify(.interruptedRecoverable, message: reportedMessage)
+        case .resourceBlocked(let message, let preserveAudio):
+            let reportedMessage = interruptContinuity(
+                message: message,
+                preserveAudio: preserveAudio,
+                resourceBlocked: true
+            )
+            notify(.resourceBlocked, message: reportedMessage)
+        }
+    }
+
+    private func interruptContinuity(
+        message: String,
+        preserveAudio: Bool,
+        resourceBlocked: Bool = false
+    ) -> String {
+        guard let state = transaction?.state,
+              [.preparing, .recording, .finalizing, .recognizing].contains(state) else { return message }
+
+        preparationID = nil
+        preparationStartedAt = nil
+        if preserveAudio,
+           case .available(let url) = transaction?.audioState,
+           FileManager.default.fileExists(atPath: url.path) {
+            preservedAudioURL = url
+        } else {
+            preservedAudioURL = nil
+        }
+        let reportedMessage = preserveAudio && preservedAudioURL == nil
+            ? message.replacingOccurrences(
+                of: "Audio was preserved for recovery.",
+                with: "The captured audio could not be preserved."
+            )
+            : message
+        if resourceBlocked {
+            fail(kind: .resourceBlocked, message: reportedMessage, recoverable: true)
+        } else {
+            do {
+                try transaction?.interruptRecoverably(message: reportedMessage)
+            } catch {
+                assertionFailure("Invalid continuity interruption: \(error)")
+            }
+        }
+        recognitionTask?.cancel()
+        if state == .recording || state == .finalizing {
+            captureOutput?.stopRecording()
+        } else if state == .recognizing, let operationID = transaction?.operationID {
+            preservedAudioURL = nil
+            artifactCleaner.removeOperation(operationID: operationID)
+            transaction?.setAudioState(.discarded)
+        } else if state == .preparing, let operationID = transaction?.operationID {
+            artifactCleaner.removeOperation(operationID: operationID)
+            transaction?.setAudioState(.discarded)
+        }
+        activeProfileID = nil
+        status = reportedMessage
+        return reportedMessage
+    }
+
+    private func notify(_ notification: ContinuityNotification, message: String) {
+        lastContinuityNotification = notification
+        onContinuityNotification?(notification, message)
+    }
+
+    func beginCommit(operationID: UUID) {
+        guard transaction?.operationID == operationID else { return }
+        transition(to: .committing)
+    }
+
+    func completeCommit(operationID: UUID) {
+        guard transaction?.operationID == operationID else { return }
+        transition(to: .retained)
+    }
+
+    func failCommit(operationID: UUID, message: String) {
+        guard transaction?.operationID == operationID else { return }
+        fail(kind: .insertion, message: message, recoverable: true)
+    }
+
+    func acceptRecognizedCandidate(
+        operationID: UUID,
+        text: String,
+        profileID: String,
+        createdAt: Date = Date()
+    ) {
+        var restored = DictationTransaction(
+            operationID: operationID,
+            profileID: profileID,
+            startedAt: createdAt
+        )
+        try? restored.transition(to: .recording, at: createdAt)
+        try? restored.transition(to: .finalizing, at: createdAt)
+        try? restored.transition(to: .recognizing, at: createdAt)
+        try? restored.setCandidateText(text, at: createdAt)
+        transaction = restored
+        transcript = text
+    }
+
+    func persistCandidate(operationID: UUID) throws {
+        guard let transaction,
+              transaction.operationID == operationID,
+              let text = transaction.candidateText else { return }
+        let pending = PendingDictation(
+            operationID: operationID,
+            text: text,
+            createdAt: transaction.startedAt,
+            profileID: transaction.profileID,
+            trust: .locallyRecognized,
+            commitState: .ready
+        )
+        try pendingStore.save(pending)
+        pendingResult = pending
+        pendingStoreError = nil
+    }
+
+    func copyPendingResult(copy: (String) -> Void) throws -> InsertionReceipt {
+        guard let transaction else { return .copyOnly }
+        try persistCandidate(operationID: transaction.operationID)
+        guard let pendingResult else { return .copyOnly }
+        copy(pendingResult.text)
+        return .copyOnly
+    }
+
+    func commitCandidate(
+        operationID: UUID,
+        disposition: (String) async -> InsertionReceipt
+    ) async throws -> InsertionReceipt {
+        try persistCandidate(operationID: operationID)
+        guard var pending = pendingResult, pending.operationID == operationID else {
+            return .failedRecoverable(.noFocusedControl)
+        }
+        pending.commitState = .inserting
+        try pendingStore.save(pending)
+        pendingResult = pending
+        beginCommit(operationID: operationID)
+        let receipt = await disposition(pending.text)
+        if receipt.isVerified {
+            try pendingStore.discard()
+            pendingResult = nil
+            completeCommit(operationID: operationID)
+            return receipt
+        }
+        pending.commitState = .insertionFailed
+        try pendingStore.save(pending)
+        pendingResult = pending
+        failCommit(operationID: operationID, message: receipt.diagnostic)
+        return receipt
+    }
+
+    func retryPendingResult(
+        disposition: (String, UUID) async -> InsertionReceipt
+    ) async throws -> InsertionReceipt {
+        guard var pending = pendingResult else {
+            return .failedRecoverable(.noFocusedControl)
+        }
+        pending.commitState = .inserting
+        try pendingStore.save(pending)
+        pendingResult = pending
+        beginCommit(operationID: pending.operationID)
+        let receipt = await disposition(pending.text, pending.operationID)
+        if receipt.verifiedInsertion?.operationID == pending.operationID {
+            try pendingStore.discard()
+            pendingResult = nil
+            completeCommit(operationID: pending.operationID)
+            return receipt
+        }
+        pending.commitState = .insertionFailed
+        try pendingStore.save(pending)
+        pendingResult = pending
+        failCommit(operationID: pending.operationID, message: receipt.diagnostic)
+        return receipt
+    }
+
+    func discardPendingResult() throws {
+        try pendingStore.discard()
+        pendingResult = nil
+        pendingStoreError = nil
+    }
+
+    var pendingDeletionArtifact: DeletionArtifact {
+        pendingStore.deletionArtifact
+    }
+
+    func acknowledgePendingArtifactDeletion() {
+        pendingResult = nil
+        pendingStoreError = nil
+    }
+
+    func updatePendingText(_ text: String) throws {
+        guard var pending = pendingResult else { return }
+        pending.text = text
+        try pendingStore.save(pending)
+        pendingResult = pending
+    }
+
+    private func transition(to state: DictationTransaction.State) {
+        do {
+            try transaction?.transition(to: state)
+        } catch {
+            assertionFailure("Invalid dictation transaction transition: \(error)")
+        }
+    }
+
+    private func fail(
+        kind: DictationTransaction.Failure.Kind,
+        message: String,
+        recoverable: Bool
+    ) {
+        do {
+            try transaction?.fail(
+                .init(kind: kind, message: message),
+                recoverable: recoverable
+            )
+        } catch {
+            assertionFailure("Invalid dictation transaction failure: \(error)")
         }
     }
 

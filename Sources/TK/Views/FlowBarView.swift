@@ -5,7 +5,8 @@ struct FlowBarView: View {
     let model: AppModel
 
     var body: some View {
-        HStack(spacing: 10) {
+        VStack(spacing: 8) {
+            HStack(spacing: 10) {
             if model.dictation.isRecording {
                 Button {
                     model.cancelDictation()
@@ -36,8 +37,10 @@ struct FlowBarView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(flowAccent)
-                .help("Stop and insert")
-                .accessibilityLabel("Stop recording and insert transcription")
+                .help(model.canRetryInsertion ? "Stop and insert" : "Stop and prepare transcription to copy")
+                .accessibilityLabel(model.canRetryInsertion
+                    ? "Stop recording and insert transcription"
+                    : "Stop recording and prepare transcription to copy")
             } else if model.dictation.isPreparing {
                 ProgressView()
                     .controlSize(.small)
@@ -63,6 +66,14 @@ struct FlowBarView: View {
                 .buttonStyle(.plain)
                 .help("Start dictation — \(model.dictationShortcut.label)")
                 .accessibilityLabel("Start dictation")
+            }
+            }
+            if model.hasPendingRecovery {
+                RecoveryActionsView(model: model, compact: true)
+                    .frame(width: 520)
+            }
+            if model.canUndoInsertion {
+                Button("Undo verified insertion") { model.undoLastInsertion() }
             }
         }
         .buttonStyle(.plain)
