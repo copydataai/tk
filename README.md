@@ -4,7 +4,7 @@
 
 ## What it does
 
-- Press a global shortcut, speak, and press it again to insert the transcription wherever the text cursor is active.
+- Press a global shortcut, speak, and press it again to insert the transcription or copy it yourself in microphone-only Copy Mode.
 - Select text in another app and read it aloud with a second global shortcut.
 - Preview Kokoro's multilingual voices by language, then adjust speed and volume.
 - Review previous dictations in local, on-device history.
@@ -16,7 +16,8 @@
 - macOS 14 or newer
 - Apple silicon with at least 16 GB of memory; 24 GB is recommended
 - About 1.1 GB of disk space for the app and cached speech models
-- Microphone and Accessibility permissions
+- Microphone permission for dictation
+- Accessibility permission only for automatic insertion and Read Selection
 
 `tk` never falls back to cloud recognition. The multilingual model detects the spoken language automatically.
 
@@ -79,11 +80,11 @@ Before a release, complete the real-device checks in [docs/ACCEPTANCE.md](docs/A
 
 ## First use
 
-1. Open `tk` and click **Enable…** beside Accessibility and Microphone.
-2. Approve both permissions in macOS System Settings.
-3. Return to `tk` and click **Get Started**. `tk` automatically uses the last working microphone and falls back to another connected input when needed.
-4. Place the cursor in another app, press the shortcut, speak, then press it again to insert.
-5. Open **Read aloud** to preview a voice, or select text in another app and press the read shortcut.
+1. Open `tk`, enable Microphone, and click **Get Started**. Accessibility is optional during onboarding.
+2. Without Accessibility, dictate in Copy Mode and choose **Copy** after the transcription is ready. Clipboard contents can be read by other processes on your Mac.
+3. To enable automatic insertion or Read Selection, enable Accessibility in macOS System Settings.
+4. `tk` automatically uses the last working microphone and falls back to another connected input when needed.
+5. Open **Read aloud** to preview a voice, or select text in another app and press the read shortcut after granting Accessibility.
 
 Voice settings are saved automatically. Transcript text and timestamps are stored with macOS SQLite at `~/Library/Application Support/tk/history.sqlite3`; microphone audio is not retained.
 
@@ -94,7 +95,7 @@ Default shortcuts:
 
 ## Current scope
 
-Dictation is processed after recording stops, rather than streamed while speaking. Reading and insertion work in apps that expose text through macOS Accessibility; `tk` falls back to copy/paste events for other standard text controls while restoring the clipboard afterward.
+Dictation is processed after recording stops, rather than streamed while speaking. Copy Mode records, transcribes, and persists pending text without Accessibility, focus capture, selected-text access, or synthetic key events. Copying is always user initiated. Automatic insertion and Read Selection remain disabled until Accessibility is granted. In insertion mode, `tk` can fall back to copy/paste events for standard text controls while restoring the clipboard afterward.
 
 ## Publish a release
 

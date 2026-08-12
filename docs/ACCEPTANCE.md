@@ -28,7 +28,14 @@ Run this checklist against the exact DMG intended for publication. Use a macOS u
 
 - [ ] Confirm onboarding clearly reports Microphone and Accessibility readiness.
 - [ ] Grant Microphone access from the app prompt and confirm readiness updates.
+- [ ] With Accessibility denied and Microphone granted, confirm onboarding can complete in Copy Mode.
+- [ ] Complete a Copy Mode dictation and confirm it reaches a ready result with pending text persisted across relaunch.
+- [ ] Confirm Copy Mode does not capture focus, access selected text, call Accessibility APIs for dictation, or post synthetic key events.
+- [ ] Choose **Copy** and confirm the app reports a `copyOnly` disposition while keeping the text pending. Confirm the UI warns that other processes can read clipboard contents.
+- [ ] Confirm retry/automatic insertion is disabled until Accessibility is granted.
 - [ ] Grant Accessibility access from System Settings and confirm readiness updates.
+- [ ] Confirm automatic insertion becomes available after Accessibility is granted.
+- [ ] Revoke Accessibility and confirm Read Selection remains unavailable and explains that permission is required.
 - [ ] Quit and reopen `tk`; confirm both permissions remain recognized.
 - [ ] Deny or revoke each permission in turn and confirm the app explains what is unavailable without crashing.
 

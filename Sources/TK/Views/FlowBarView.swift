@@ -37,8 +37,10 @@ struct FlowBarView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(flowAccent)
-                .help("Stop and insert")
-                .accessibilityLabel("Stop recording and insert transcription")
+                .help(model.canRetryInsertion ? "Stop and insert" : "Stop and prepare transcription to copy")
+                .accessibilityLabel(model.canRetryInsertion
+                    ? "Stop recording and insert transcription"
+                    : "Stop recording and prepare transcription to copy")
             } else if model.dictation.isPreparing {
                 ProgressView()
                     .controlSize(.small)

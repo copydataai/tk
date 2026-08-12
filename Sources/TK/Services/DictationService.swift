@@ -352,6 +352,14 @@ final class DictationService {
         pendingStoreError = nil
     }
 
+    func copyPendingResult(copy: (String) -> Void) throws -> InsertionReceipt {
+        guard let transaction else { return .copyOnly }
+        try persistCandidate(operationID: transaction.operationID)
+        guard let pendingResult else { return .copyOnly }
+        copy(pendingResult.text)
+        return .copyOnly
+    }
+
     func commitCandidate(
         operationID: UUID,
         disposition: (String) async -> InsertionReceipt

@@ -173,11 +173,46 @@ final class CoreWorkflowTests: XCTestCase {
         XCTAssertEqual(actions, ["dictation", "reading"])
     }
 
-    func testOnboardingRequiresBothPermissions() {
+    func testOnboardingRequiresOnlyMicrophoneForCopyMode() {
         XCTAssertFalse(OnboardingReadiness(accessibilityGranted: false, microphoneGranted: false).canGetStarted)
         XCTAssertFalse(OnboardingReadiness(accessibilityGranted: true, microphoneGranted: false).canGetStarted)
-        XCTAssertFalse(OnboardingReadiness(accessibilityGranted: false, microphoneGranted: true).canGetStarted)
+        XCTAssertTrue(OnboardingReadiness(accessibilityGranted: false, microphoneGranted: true).canGetStarted)
         XCTAssertTrue(OnboardingReadiness(accessibilityGranted: true, microphoneGranted: true).canGetStarted)
+    }
+
+    func testCopyModeNeverAuthorizesAccessibilityWork() {
+        let authority = DictationAuthority(accessibilityGranted: false)
+
+        XCTAssertEqual(authority.mode, .copy)
+        XCTAssertFalse(authority.mayCaptureInsertionTarget)
+        XCTAssertFalse(authority.mayInsertAutomatically)
+        XCTAssertTrue(authority.mayCopyToClipboard)
+    }
+
+    @MainActor
+    func testCopyingAReadyResultReturnsCopyOnlyAndKeepsPendingText() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = PendingDictationStore(
+            fileURL: directory.appendingPathComponent("pending-dictation.json")
+        )
+        let service = DictationService(pendingStore: store)
+        let operationID = UUID()
+        service.acceptRecognizedCandidate(
+            operationID: operationID,
+            text: "copy me",
+            profileID: "profile"
+        )
+
+        let receipt = try service.copyPendingResult { text in
+            XCTAssertEqual(text, "copy me")
+        }
+
+        XCTAssertEqual(receipt, .copyOnly)
+        XCTAssertEqual(service.transaction?.state, .resultReady)
+        XCTAssertEqual(service.pendingResult?.text, "copy me")
+        XCTAssertEqual(try store.load()?.text, "copy me")
     }
 
     func testAccessibilityValueRejectsNonElementValues() {

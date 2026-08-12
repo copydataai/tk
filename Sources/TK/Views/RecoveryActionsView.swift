@@ -18,6 +18,8 @@ struct RecoveryActionsView: View {
             HStack {
                 Button("Copy") { model.copyRecoveryText() }
                 Button("Retry insertion") { model.retryInsertion() }
+                    .disabled(!model.canRetryInsertion)
+                    .help("Requires Accessibility permission")
                 Button("Retain to history") { model.retainRecoveryToHistory() }
                 Button("Discard", role: .destructive) { model.discardRecovery() }
             }

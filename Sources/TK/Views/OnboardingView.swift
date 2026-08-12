@@ -23,7 +23,7 @@ struct OnboardingView: View {
             VStack(spacing: 0) {
                 SetupRow(
                     title: "Accessibility",
-                    detail: "Insert dictated text and read your selection.",
+                    detail: "Optional for automatic insertion; required to read your selection.",
                     isReady: model.accessibilityGranted,
                     action: model.requestAccessibility
                 )
@@ -42,6 +42,10 @@ struct OnboardingView: View {
             }
 
             Label("Speech models are included and work offline.", systemImage: "checkmark.shield")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            Text(model.dictationModeDescription)
                 .font(.callout)
                 .foregroundStyle(.secondary)
 

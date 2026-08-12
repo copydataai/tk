@@ -71,6 +71,9 @@ private struct GeneralSettings: View {
                 Text("Auto detects the spoken language. Choose one to improve recognition when you know it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Text(model.dictationModeDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section("History") {
                 Picker("Keep transcripts", selection: $model.historyRetentionLimit) {
