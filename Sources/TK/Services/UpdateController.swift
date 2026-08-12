@@ -34,10 +34,11 @@ final class UpdateController: ObservableObject {
     }
 
     var isEnabled: Bool {
-        updaterController != nil
+        updaterController?.updater.canCheckForUpdates ?? false
     }
 
     func checkForUpdates() {
+        guard isEnabled else { return }
         updaterController?.checkForUpdates(nil)
     }
 }
