@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 
+@MainActor
 struct HistoryView: View {
     let model: AppModel
     @State private var showingClearConfirmation = false
