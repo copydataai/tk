@@ -3,6 +3,12 @@ import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let path = ProcessInfo.processInfo.environment["TK_QUALIFICATION_READY_FILE"] {
+            let receipt = Data("{\"schemaVersion\":1,\"ready\":true,\"residentListener\":false}\n".utf8)
+            try? receipt.write(to: URL(fileURLWithPath: path), options: .atomic)
+            NSApp.terminate(nil)
+            return
+        }
         NSApp.setActivationPolicy(.regular)
         revealMainWindow()
     }

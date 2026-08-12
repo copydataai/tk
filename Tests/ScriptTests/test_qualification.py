@@ -3,6 +3,16 @@ import json, os, pathlib, plistlib, subprocess, tempfile, unittest
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 class QualificationCLITests(unittest.TestCase):
+    def test_installed_qualification_requires_the_exact_dmg_and_checksum(self):
+        result=subprocess.run([str(ROOT/"script/qualify_installed_app.sh"),"/does/not/exist.dmg"],text=True,capture_output=True)
+        self.assertEqual(result.returncode,2)
+        self.assertIn("DMG and matching .sha256 required",result.stderr)
+
+    def test_installed_qualification_declares_all_required_predicates(self):
+        source=(ROOT/"script/qualify_installed_app.sh").read_text()
+        for predicate in ("hdiutil attach","spctl --assess","codesign --verify","stapler validate","TK_QUALIFICATION_READY_FILE","runtimeDownloadsRequired","residentListener","sbom.json","provenance.json","rollback.json","uninstall.json","qualify_compatibility.py"):
+            self.assertIn(predicate,source)
+
     def test_writer_accepts_normal_app_bundle_and_derives_context(self):
         with tempfile.TemporaryDirectory() as raw:
             root=pathlib.Path(raw); app=root/"tk.app"; (app/"Contents").mkdir(parents=True)

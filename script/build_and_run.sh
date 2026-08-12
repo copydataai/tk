@@ -261,7 +261,13 @@ cp "$WHISPER_BINARY" "$APP_RESOURCES/whisper-cli"
 cp "$WHISPER_SOURCE/LICENSE" "$APP_RESOURCES/Whisper-LICENSE"
 cp "$ROOT_DIR/Assets/THIRD_PARTY_NOTICES.md" "$APP_RESOURCES/THIRD_PARTY_NOTICES.md"
 cat >"$APP_RESOURCES/uninstall.json" <<EOF
-{"applicationSupport":"~/Library/Application Support/tk","installedApp":"/Applications/tk.app","rollback":"restore the prior notarized DMG"}
+{"schemaVersion":1,"applicationSupport":["~/Library/Application Support/tk"],"installedApp":"tk.app","userInitiated":true}
+EOF
+cat >"$APP_RESOURCES/rollback.json" <<EOF
+{"schemaVersion":1,"strategy":"install-prior-notarized-dmg","preservesPendingText":true}
+EOF
+cat >"$APP_RESOURCES/network-policy.json" <<EOF
+{"schemaVersion":1,"offlineOperation":true,"runtimeDownloadsRequired":false,"residentListener":false}
 EOF
 cp "$APP_ICON" "$APP_RESOURCES/tk.icns"
 KOKORO_RESOURCES="$APP_RESOURCES/kokoro"
