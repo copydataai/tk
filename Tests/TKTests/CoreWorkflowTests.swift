@@ -50,9 +50,9 @@ final class CoreWorkflowTests: XCTestCase {
         let receipt = try await service.commitCandidate(operationID: firstID) { text in
             XCTAssertEqual(text, "insert me")
             XCTAssertEqual(try? store.load()?.commitState, .inserting)
-            return .verified
+            return self.verifiedReceipt(operationID: firstID, text: text)
         }
-        XCTAssertEqual(receipt, .verified)
+        XCTAssertEqual(receipt.operationID, firstID)
         XCTAssertNil(service.pendingResult)
 
         let secondID = UUID()
@@ -188,5 +188,25 @@ final class CoreWorkflowTests: XCTestCase {
         let systemElement = AXUIElementCreateSystemWide()
 
         XCTAssertNotNil(MacAccessibility.element(from: systemElement))
+    }
+
+    private func verifiedReceipt(operationID: UUID, text: String) -> InsertionReceipt {
+        .verified(.init(
+            operationID: operationID,
+            target: .init(
+                processIdentifier: 1,
+                bundleIdentifier: "test",
+                role: "AXTextArea",
+                subrole: nil,
+                windowDigest: "window",
+                elementIdentity: 1,
+                readableStateDigest: InsertionTargetFingerprint.digest(text)
+            ),
+            insertedRange: NSRange(location: 0, length: text.utf16.count),
+            resultingSelectionRange: NSRange(location: text.utf16.count, length: 0),
+            resultingValue: text,
+            replacedText: "",
+            surroundingStateDigest: InsertionTargetFingerprint.digest("")
+        ))
     }
 }

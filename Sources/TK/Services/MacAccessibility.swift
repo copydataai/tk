@@ -67,6 +67,41 @@ enum MacAccessibility {
         stringAttribute(kAXSelectedTextAttribute, of: element)
     }
 
+    static func value(of element: AXUIElement) -> String? {
+        stringAttribute(kAXValueAttribute, of: element)
+    }
+
+    static func selectedTextRange(of element: AXUIElement) -> NSRange? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            &value
+        ) == .success,
+              let value,
+              CFGetTypeID(value) == AXValueGetTypeID() else {
+            return nil
+        }
+        let axValue = unsafeBitCast(value, to: AXValue.self)
+        guard
+              AXValueGetType(axValue) == .cfRange else {
+            return nil
+        }
+        var range = CFRange()
+        guard AXValueGetValue(axValue, .cfRange, &range) else { return nil }
+        return NSRange(location: range.location, length: range.length)
+    }
+
+    static func setSelectedTextRange(_ range: NSRange, of element: AXUIElement) -> Bool {
+        var cfRange = CFRange(location: range.location, length: range.length)
+        guard let value = AXValueCreate(.cfRange, &cfRange) else { return false }
+        return AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            value
+        ) == .success
+    }
+
     private static func safeReadableStateDigest(
         of element: AXUIElement,
         role: String?,
@@ -76,7 +111,7 @@ enum MacAccessibility {
               role == kAXTextFieldRole as String || role == kAXTextAreaRole as String else {
             return nil
         }
-        let state = selectedText(of: element) ?? stringAttribute(kAXValueAttribute, of: element)
+        let state = selectedText(of: element) ?? value(of: element)
         return state.map(InsertionTargetFingerprint.digest)
     }
 

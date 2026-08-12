@@ -65,6 +65,19 @@ struct HomeView: View {
                     in: RoundedRectangle(cornerRadius: 20)
                 )
 
+                if model.hasPendingRecovery {
+                    RecoveryActionsView(model: model)
+                }
+
+                if model.canUndoInsertion {
+                    Button("Undo verified insertion") {
+                        model.undoLastInsertion()
+                    }
+                    Text("Undo is available only while the verified target and inserted content are unchanged.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 HStack(spacing: 12) {
                     StatusTile(value: "100%", label: "Local processing")
                     StatusTile(value: "24 kHz", label: "Voice output")

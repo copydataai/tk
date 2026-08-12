@@ -19,6 +19,8 @@ final class AppModel {
     var accessibilityGranted = false
     var microphoneGranted = false
     var transcripts: [TranscriptRecord] = []
+    var recoveryText = ""
+    private(set) var lastInsertionReceipt: InsertionReceipt?
     var historyRetentionLimit: Int {
         didSet {
             historyRetentionLimit = max(0, historyRetentionLimit)
@@ -118,6 +120,7 @@ final class AppModel {
         } else if dictation.pendingResult != nil {
             statusMessage = "A pending transcription was recovered"
         }
+        recoveryText = dictation.pendingResult?.text ?? ""
         performanceSnapshot = .capture(launchStartedAt: launchStartedAt)
     }
 
@@ -141,6 +144,69 @@ final class AppModel {
 
     func cancelDictation() {
         dictation.cancel()
+    }
+
+    var hasPendingRecovery: Bool { dictation.pendingResult != nil }
+    var canUndoInsertion: Bool { lastInsertionReceipt?.verifiedInsertion != nil }
+
+    func copyRecoveryText() {
+        macText.copy(recoveryText)
+        statusMessage = "Copied pending transcription"
+    }
+
+    func retryInsertion() {
+        Task {
+            do {
+                try dictation.updatePendingText(recoveryText)
+                let receipt = try await dictation.retryPendingResult { [weak self] text, operationID in
+                    guard let self else { return .failedRecoverable(.noFocusedControl) }
+                    return await macText.insert(text, operationID: operationID)
+                }
+                applyInsertionReceipt(receipt)
+            } catch {
+                statusMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func discardRecovery() {
+        do {
+            try dictation.discardPendingResult()
+            recoveryText = ""
+            statusMessage = "Discarded pending transcription"
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func retainRecoveryToHistory() {
+        do {
+            guard !recoveryText.isEmpty, let transcriptStore else {
+                throw TranscriptStoreError.sqlite(transcriptStoreError ?? "The database is unavailable.")
+            }
+            if transcripts.first?.text != recoveryText {
+                try transcriptStore.insert(recoveryText)
+            }
+            transcripts = try transcriptStore.recent(limit: historyRetentionLimit)
+            try dictation.discardPendingResult()
+            recoveryText = ""
+            statusMessage = "Retained transcription in history"
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func undoLastInsertion() {
+        guard let insertion = lastInsertionReceipt?.verifiedInsertion else {
+            statusMessage = "Undo is unavailable because the prior insertion was not verified."
+            return
+        }
+        if let refusal = macText.undo(insertion) {
+            statusMessage = refusal
+        } else {
+            lastInsertionReceipt = nil
+            statusMessage = "Undid verified insertion"
+        }
     }
 
     func readSelection() {
@@ -363,24 +429,33 @@ final class AppModel {
                 } catch {
                     transcriptStoreError = error.localizedDescription
                 }
-                return await macText.insert(text)
+                return await macText.insert(text, operationID: operationID)
             }
-            switch receipt {
-            case .verified:
-                statusMessage = transcriptStoreError.map {
-                    "Inserted, but history could not be saved: \($0)"
-                } ?? "Inserted transcription"
-            case .attempted:
-                statusMessage = "Insertion was attempted but could not be verified; text remains pending"
-            case .copyOnly:
-                statusMessage = "Text was copied but could not be pasted; text remains pending"
-            case .failedRecoverable:
-                statusMessage = "Insertion target changed or is unsupported; text remains pending"
-            }
+            applyInsertionReceipt(receipt)
         } catch {
             statusMessage = transcriptStoreError.map {
                 "History could not be saved: \($0). Insertion also failed: \(error.localizedDescription)"
             } ?? error.localizedDescription
+        }
+    }
+
+    private func applyInsertionReceipt(_ receipt: InsertionReceipt) {
+        lastInsertionReceipt = receipt
+        switch receipt {
+        case .verified:
+            recoveryText = ""
+            statusMessage = transcriptStoreError.map {
+                "Inserted, but history could not be saved: \($0)"
+            } ?? "Inserted transcription"
+        case .attempted:
+            recoveryText = dictation.pendingResult?.text ?? recoveryText
+            statusMessage = "Insertion was attempted but could not be verified; text remains pending"
+        case .copyOnly:
+            recoveryText = dictation.pendingResult?.text ?? recoveryText
+            statusMessage = "Text was copied but could not be pasted; text remains pending"
+        case .failedRecoverable:
+            recoveryText = dictation.pendingResult?.text ?? recoveryText
+            statusMessage = "Insertion target changed or is unsupported; text remains pending"
         }
     }
 

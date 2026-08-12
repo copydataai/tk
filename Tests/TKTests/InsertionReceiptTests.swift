@@ -3,16 +3,17 @@ import XCTest
 
 final class InsertionReceiptTests: XCTestCase {
     func testMatchingAXReadbackIsVerified() {
+        let verified = verifiedReceipt()
         XCTAssertEqual(
-            InsertionReceipt.axWriteResult(writeSucceeded: true, readbackMatches: true),
-            .verified
+            InsertionReceipt.axWriteResult(writeSucceeded: true, verifiedInsertion: verified),
+            .verified(verified)
         )
     }
 
-    func testUnreadableAXPoststateIsOnlyAttempted() {
+    func testUnreadableAXPoststateIsRecoverableFailure() {
         XCTAssertEqual(
-            InsertionReceipt.axWriteResult(writeSucceeded: true, readbackMatches: nil),
-            .attempted
+            InsertionReceipt.axWriteResult(writeSucceeded: true, verifiedInsertion: nil),
+            .failedRecoverable(.readbackMismatch)
         )
     }
 
@@ -47,6 +48,26 @@ final class InsertionReceiptTests: XCTestCase {
         XCTAssertEqual(
             InsertionReceipt.failedRecoverable(.unsupportedControl).diagnostic,
             "failedRecoverable:unsupportedControl"
+        )
+    }
+
+    private func verifiedReceipt() -> VerifiedInsertion {
+        VerifiedInsertion(
+            operationID: UUID(),
+            target: .init(
+                processIdentifier: 1,
+                bundleIdentifier: "test",
+                role: "AXTextArea",
+                subrole: nil,
+                windowDigest: "window",
+                elementIdentity: 1,
+                readableStateDigest: InsertionTargetFingerprint.digest("text")
+            ),
+            insertedRange: NSRange(location: 0, length: 4),
+            resultingSelectionRange: NSRange(location: 4, length: 0),
+            resultingValue: "text",
+            replacedText: "",
+            surroundingStateDigest: InsertionTargetFingerprint.digest("")
         )
     }
 }

@@ -5,7 +5,8 @@ struct FlowBarView: View {
     let model: AppModel
 
     var body: some View {
-        HStack(spacing: 10) {
+        VStack(spacing: 8) {
+            HStack(spacing: 10) {
             if model.dictation.isRecording {
                 Button {
                     model.cancelDictation()
@@ -63,6 +64,14 @@ struct FlowBarView: View {
                 .buttonStyle(.plain)
                 .help("Start dictation — \(model.dictationShortcut.label)")
                 .accessibilityLabel("Start dictation")
+            }
+            }
+            if model.hasPendingRecovery {
+                RecoveryActionsView(model: model, compact: true)
+                    .frame(width: 520)
+            }
+            if model.canUndoInsertion {
+                Button("Undo verified insertion") { model.undoLastInsertion() }
             }
         }
         .buttonStyle(.plain)

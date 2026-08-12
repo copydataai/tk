@@ -12,7 +12,7 @@ struct PendingDictation: Codable, Equatable, Sendable {
     }
 
     let operationID: UUID
-    let text: String
+    var text: String
     let createdAt: Date
     let profileID: String
     let trust: Trust
