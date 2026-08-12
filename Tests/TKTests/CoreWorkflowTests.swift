@@ -15,12 +15,13 @@ final class CoreWorkflowTests: XCTestCase {
     }
 
     func testCancellingPreparationReturnsDictationToIdle() {
-        var activity = DictationActivity()
-        activity.beginPreparing()
+        var transaction = DictationTransaction(profileID: "profile")
+        var activity = DictationActivity(transaction: transaction)
 
         XCTAssertTrue(activity.isPreparing)
 
-        activity.cancelPreparation()
+        try! transaction.transition(to: .cancelled)
+        activity = DictationActivity(transaction: transaction)
 
         XCTAssertFalse(activity.isPreparing)
         XCTAssertFalse(activity.isRecording)
@@ -28,29 +29,35 @@ final class CoreWorkflowTests: XCTestCase {
     }
 
     func testFinishingARecordingMovesThroughFinalizingAndTranscribing() {
-        var activity = DictationActivity()
-        activity.beginPreparing()
-        activity.beginRecording()
-        activity.finishRecording(shouldTranscribe: true)
+        var transaction = DictationTransaction(profileID: "profile")
+        try! transaction.transition(to: .recording)
+        try! transaction.transition(to: .finalizing)
+        var activity = DictationActivity(transaction: transaction)
 
         XCTAssertTrue(activity.isFinalizing)
+        XCTAssertFalse(activity.isTranscribing)
+
+        try! transaction.transition(to: .recognizing)
+        activity = DictationActivity(transaction: transaction)
+        XCTAssertFalse(activity.isFinalizing)
         XCTAssertTrue(activity.isTranscribing)
 
-        XCTAssertTrue(activity.completeRecording())
-        XCTAssertFalse(activity.isFinalizing)
-        activity.completeTranscription()
+        try! transaction.setCandidateText("hello")
+        activity = DictationActivity(transaction: transaction)
         XCTAssertFalse(activity.isTranscribing)
     }
 
     func testCancellingARecordingFinalizesWithoutTranscription() {
-        var activity = DictationActivity()
-        activity.beginPreparing()
-        activity.beginRecording()
-        activity.finishRecording(shouldTranscribe: false)
+        var transaction = DictationTransaction(profileID: "profile")
+        try! transaction.transition(to: .recording)
+        try! transaction.transition(to: .finalizing)
+        var activity = DictationActivity(transaction: transaction)
 
         XCTAssertTrue(activity.isFinalizing)
         XCTAssertFalse(activity.isTranscribing)
-        XCTAssertFalse(activity.completeRecording())
+
+        try! transaction.transition(to: .cancelled)
+        activity = DictationActivity(transaction: transaction)
         XCTAssertFalse(activity.isFinalizing)
     }
 

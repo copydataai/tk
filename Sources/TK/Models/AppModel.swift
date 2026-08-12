@@ -97,9 +97,9 @@ final class AppModel {
             transcriptStoreError = error.localizedDescription
         }
 
-        dictation.onTranscriptReady = { [weak self] text in
+        dictation.onCommitCandidate = { [weak self] operationID, text in
             Task { @MainActor in
-                await self?.saveAndInsert(text)
+                await self?.saveAndInsert(text, operationID: operationID)
             }
         }
         dictation.resolveArtifact = { [weak self] profileID in
@@ -343,7 +343,8 @@ final class AppModel {
         return true
     }
 
-    private func saveAndInsert(_ text: String) async {
+    private func saveAndInsert(_ text: String, operationID: UUID) async {
+        dictation.beginCommit(operationID: operationID)
         do {
             guard let transcriptStore else {
                 throw TranscriptStoreError.sqlite(
@@ -359,10 +360,12 @@ final class AppModel {
 
         do {
             try await macText.insert(text)
+            dictation.completeCommit(operationID: operationID)
             statusMessage = transcriptStoreError.map {
                 "Inserted, but history could not be saved: \($0)"
             } ?? "Inserted transcription"
         } catch {
+            dictation.failCommit(operationID: operationID, message: error.localizedDescription)
             statusMessage = transcriptStoreError.map {
                 "History could not be saved: \($0). Insertion also failed: \(error.localizedDescription)"
             } ?? error.localizedDescription
