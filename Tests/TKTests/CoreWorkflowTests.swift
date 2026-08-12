@@ -42,6 +42,18 @@ final class CoreWorkflowTests: XCTestCase {
         XCTAssertFalse(activity.isTranscribing)
     }
 
+    func testCancellingARecordingFinalizesWithoutTranscription() {
+        var activity = DictationActivity()
+        activity.beginPreparing()
+        activity.beginRecording()
+        activity.finishRecording(shouldTranscribe: false)
+
+        XCTAssertTrue(activity.isFinalizing)
+        XCTAssertFalse(activity.isTranscribing)
+        XCTAssertFalse(activity.completeRecording())
+        XCTAssertFalse(activity.isFinalizing)
+    }
+
     @MainActor
     func testHotKeyRoutesEachRegisteredAction() {
         let service = GlobalHotKeyService()
@@ -65,5 +77,11 @@ final class CoreWorkflowTests: XCTestCase {
 
     func testAccessibilityValueRejectsNonElementValues() {
         XCTAssertNil(MacAccessibility.element(from: "not an accessibility element" as CFTypeRef))
+    }
+
+    func testAccessibilityValueAcceptsARealSystemElement() {
+        let systemElement = AXUIElementCreateSystemWide()
+
+        XCTAssertNotNil(MacAccessibility.element(from: systemElement))
     }
 }
