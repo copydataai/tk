@@ -349,8 +349,8 @@ final class AppModel {
 
     private func saveAndInsert(_ text: String, operationID: UUID) async {
         do {
-            try await dictation.commitCandidate(operationID: operationID) { [weak self] text in
-                guard let self else { throw CancellationError() }
+            let receipt = try await dictation.commitCandidate(operationID: operationID) { [weak self] text in
+                guard let self else { return .failedRecoverable(.noFocusedControl) }
                 do {
                     guard let transcriptStore else {
                         throw TranscriptStoreError.sqlite(
@@ -363,11 +363,20 @@ final class AppModel {
                 } catch {
                     transcriptStoreError = error.localizedDescription
                 }
-                try await macText.insert(text)
+                return await macText.insert(text)
             }
-            statusMessage = transcriptStoreError.map {
-                "Inserted, but history could not be saved: \($0)"
-            } ?? "Inserted transcription"
+            switch receipt {
+            case .verified:
+                statusMessage = transcriptStoreError.map {
+                    "Inserted, but history could not be saved: \($0)"
+                } ?? "Inserted transcription"
+            case .attempted:
+                statusMessage = "Insertion was attempted but could not be verified; text remains pending"
+            case .copyOnly:
+                statusMessage = "Text was copied but could not be pasted; text remains pending"
+            case .failedRecoverable:
+                statusMessage = "Insertion target changed or is unsupported; text remains pending"
+            }
         } catch {
             statusMessage = transcriptStoreError.map {
                 "History could not be saved: \($0). Insertion also failed: \(error.localizedDescription)"

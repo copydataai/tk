@@ -61,7 +61,7 @@ final class MacTextService: NSObject {
     private var speechID: UUID?
     private var audioPlayer: AVQueuePlayer?
     private var speechURLs: [URL] = []
-    private var insertionTarget: AXUIElement?
+    private var insertionTarget: MacAccessibility.InsertionTarget?
     private var pasteboardOperationInProgress = false
     private var pasteboardWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -95,27 +95,40 @@ final class MacTextService: NSObject {
     }
 
     func rememberInsertionTarget() {
-        insertionTarget = focusedElement
+        insertionTarget = MacAccessibility.insertionTarget(from: focusedElement)
     }
 
-    func insert(_ text: String) async throws {
-        guard hasAccessibilityPermission else { throw MacTextError.accessibilityRequired }
-        guard !text.isEmpty else { return }
+    func insert(_ text: String) async -> InsertionReceipt {
+        guard hasAccessibilityPermission else {
+            return .failedRecoverable(.accessibilityRequired)
+        }
+        guard !text.isEmpty else { return .verified }
 
-        let target = insertionTarget ?? focusedElement
+        let target = insertionTarget ?? MacAccessibility.insertionTarget(from: focusedElement)
         insertionTarget = nil
-        if let target,
-           AXUIElementSetAttributeValue(
-               target,
+        guard let target else { return .failedRecoverable(.noFocusedControl) }
+        guard target.supportsSelectedTextWrite else {
+            return .failedRecoverable(.unsupportedControl)
+        }
+        guard let current = MacAccessibility.insertionTarget(from: focusedElement),
+              target.fingerprint.corresponds(to: current.fingerprint) else {
+            return .targetMismatch
+        }
+
+        let writeSucceeded = AXUIElementSetAttributeValue(
+               target.element,
                kAXSelectedTextAttribute as CFString,
                text as CFTypeRef
-           ) == .success {
-            return
+           ) == .success
+        if writeSucceeded {
+            let readback = MacAccessibility.selectedText(of: target.element)
+            return .axWriteResult(
+                writeSucceeded: true,
+                readbackMatches: readback.map { $0 == text }
+            )
         }
 
-        if let target {
-            try await restoreFocus(to: target)
-        }
+        try? await restoreFocus(to: target.element)
 
         await acquirePasteboardAccess()
         defer { releasePasteboardAccess() }
@@ -124,10 +137,13 @@ final class MacTextService: NSObject {
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
         let insertedTextChangeCount = pasteboard.changeCount
-        try postCommandKey(UInt16(kVK_ANSI_V))
+        guard postCommandKeyIfPossible(UInt16(kVK_ANSI_V)) else {
+            return .copyOnly
+        }
         // ponytail: fixed delay keeps the clipboard intact; add per-app confirmation if slow apps miss pastes.
-        try await Task.sleep(for: .milliseconds(150))
+        try? await Task.sleep(for: .milliseconds(150))
         snapshot.restore(to: pasteboard, ifChangeCountIs: insertedTextChangeCount)
+        return .attempted
     }
 
     func selectedText() async throws -> String {
@@ -442,6 +458,15 @@ final class MacTextService: NSObject {
         keyUp.flags = .maskCommand
         keyDown.post(tap: .cghidEventTap)
         keyUp.post(tap: .cghidEventTap)
+    }
+
+    private func postCommandKeyIfPossible(_ keyCode: CGKeyCode) -> Bool {
+        do {
+            try postCommandKey(keyCode)
+            return true
+        } catch {
+            return false
+        }
     }
 
     private func restoreFocus(to target: AXUIElement) async throws {

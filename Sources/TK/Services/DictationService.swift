@@ -354,30 +354,28 @@ final class DictationService {
 
     func commitCandidate(
         operationID: UUID,
-        disposition: (String) async throws -> Void
-    ) async throws {
+        disposition: (String) async -> InsertionReceipt
+    ) async throws -> InsertionReceipt {
         try persistCandidate(operationID: operationID)
-        guard var pending = pendingResult, pending.operationID == operationID else { return }
+        guard var pending = pendingResult, pending.operationID == operationID else {
+            return .failedRecoverable(.noFocusedControl)
+        }
         pending.commitState = .inserting
         try pendingStore.save(pending)
         pendingResult = pending
         beginCommit(operationID: operationID)
-        do {
-            try await disposition(pending.text)
+        let receipt = await disposition(pending.text)
+        if receipt.isVerified {
             try pendingStore.discard()
             pendingResult = nil
             completeCommit(operationID: operationID)
-        } catch {
-            pending.commitState = .insertionFailed
-            do {
-                try pendingStore.save(pending)
-                pendingResult = pending
-            } catch {
-                pendingStoreError = error
-            }
-            failCommit(operationID: operationID, message: error.localizedDescription)
-            throw error
+            return receipt
         }
+        pending.commitState = .insertionFailed
+        try pendingStore.save(pending)
+        pendingResult = pending
+        failCommit(operationID: operationID, message: receipt.diagnostic)
+        return receipt
     }
 
     func discardPendingResult() throws {

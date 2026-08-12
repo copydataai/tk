@@ -19,17 +19,11 @@ final class CoreWorkflowTests: XCTestCase {
             createdAt: Date(timeIntervalSince1970: 42)
         )
 
-        do {
-            try await service.commitCandidate(operationID: operationID) { _ in
-                throw MacTextError.noFocusedControl
-            }
-            XCTFail("Expected insertion failure")
-        } catch {
-            guard case MacTextError.noFocusedControl = error else {
-                return XCTFail("Expected noFocusedControl, got \(error)")
-            }
+        let receipt = try await service.commitCandidate(operationID: operationID) { _ in
+            .failedRecoverable(.noFocusedControl)
         }
 
+        XCTAssertEqual(receipt, .failedRecoverable(.noFocusedControl))
         let relaunched = DictationService(
             pendingStore: PendingDictationStore(fileURL: fileURL)
         )
@@ -53,10 +47,12 @@ final class CoreWorkflowTests: XCTestCase {
             profileID: "profile"
         )
 
-        try await service.commitCandidate(operationID: firstID) { text in
+        let receipt = try await service.commitCandidate(operationID: firstID) { text in
             XCTAssertEqual(text, "insert me")
-            XCTAssertEqual(try store.load()?.commitState, .inserting)
+            XCTAssertEqual(try? store.load()?.commitState, .inserting)
+            return .verified
         }
+        XCTAssertEqual(receipt, .verified)
         XCTAssertNil(service.pendingResult)
 
         let secondID = UUID()
@@ -69,6 +65,40 @@ final class CoreWorkflowTests: XCTestCase {
         try service.discardPendingResult()
         XCTAssertNil(service.pendingResult)
         XCTAssertNil(try store.load())
+    }
+
+    @MainActor
+    func testEveryNonverifiedReceiptPreservesPendingText() async throws {
+        let receipts: [InsertionReceipt] = [
+            .attempted,
+            .copyOnly,
+            .failedRecoverable(.targetChanged)
+        ]
+
+        for expectedReceipt in receipts {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let store = PendingDictationStore(
+                fileURL: directory.appendingPathComponent("pending-dictation.json")
+            )
+            let service = DictationService(pendingStore: store)
+            let operationID = UUID()
+            service.acceptRecognizedCandidate(
+                operationID: operationID,
+                text: "keep until verified",
+                profileID: "profile"
+            )
+
+            let receipt = try await service.commitCandidate(operationID: operationID) { _ in
+                expectedReceipt
+            }
+
+            XCTAssertEqual(receipt, expectedReceipt)
+            XCTAssertEqual(service.pendingResult?.text, "keep until verified")
+            XCTAssertEqual(service.pendingResult?.commitState, .insertionFailed)
+            XCTAssertEqual(try store.load()?.text, "keep until verified")
+        }
     }
 
     @MainActor
