@@ -10,6 +10,11 @@ actor WhisperRuntime {
     private var session: LocalInferenceSession?
     private var activeProfileID: String?
     private(set) var lastPerformanceReceipt: InferencePerformanceReceipt?
+    private let probes: InferenceLiveProbes
+
+    init(probes: InferenceLiveProbes = .production) {
+        self.probes = probes
+    }
 
     func invalidate() {
         session = nil
@@ -30,32 +35,21 @@ actor WhisperRuntime {
         }
 
         let coldStart = activeProfileID != artifact.profileID || session == nil
-        let session = try inferenceSession(artifact: artifact)
+        let executableURL = try helperExecutableURL()
         let modelBytes = (try? artifact.url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        let preflight = InferencePreflight(
+        let admission = try admissionOutcome(
             duration: audio.duration,
             audioBytes: audio.byteCount,
-            audioFormat: "wav",
-            availableMemoryBytes: ProcessInfo.processInfo.physicalMemory,
-            memoryPressure: .normal,
-            helperAvailable: true,
-            profile: .init(
-                profileID: artifact.profileID,
-                requiredMemoryBytes: UInt64(max(modelBytes, 0)) * 3,
-                device: "metal"
-            ),
-            activeOperations: 0
+            profileID: artifact.profileID,
+            requiredMemoryBytes: UInt64(max(modelBytes, 0)) * 3,
+            executableURL: executableURL
         )
-        let policy = InferenceAdmissionPolicy(
-            maxDuration: Self.maxDuration,
-            maxAudioBytes: Self.maxAudioBytes,
-            allowedFormats: ["wav"],
-            maxConcurrency: 1
-        )
-        let admission = policy.evaluate(preflight)
         guard admission == .admitted else {
             throw WhisperRuntimeError.admissionDenied(String(describing: admission))
         }
+        guard InferenceOperationOwnership.acquire() else { throw WhisperRuntimeError.inferenceBusy }
+        defer { InferenceOperationOwnership.release() }
+        let session = try inferenceSession(artifact: artifact, executableURL: executableURL)
         do {
             let text = try await session.transcribe(
                 audioURL: audio.url,
@@ -78,12 +72,62 @@ actor WhisperRuntime {
         }
     }
 
-    private func inferenceSession(artifact: SpeechArtifact) throws -> LocalInferenceSession {
+    func admissionOutcomeForTesting(requiredMemoryBytes: UInt64) throws -> InferenceAdmissionOutcome {
+        try admissionOutcome(
+            duration: 1,
+            audioBytes: 1,
+            profileID: "large-v3",
+            requiredMemoryBytes: requiredMemoryBytes,
+            executableURL: URL(fileURLWithPath: "/test/whisper-cli")
+        )
+    }
+
+    private func admissionOutcome(
+        duration: TimeInterval,
+        audioBytes: Int,
+        profileID: String,
+        requiredMemoryBytes: UInt64,
+        executableURL: URL
+    ) throws -> InferenceAdmissionOutcome {
+        let preflight: InferencePreflight
+        do {
+            preflight = InferencePreflight(
+                duration: duration,
+                audioBytes: audioBytes,
+                audioFormat: "wav",
+                availableMemoryBytes: try probes.availableMemoryBytes(),
+                memoryPressure: try probes.memoryPressure(),
+                helperAvailable: try probes.helperAvailable(executableURL),
+                profile: .init(
+                    profileID: profileID,
+                    requiredMemoryBytes: requiredMemoryBytes,
+                    device: "metal"
+                ),
+                activeOperations: try probes.activeOperations()
+            )
+        } catch {
+            throw WhisperRuntimeError.admissionStateUnavailable
+        }
+        return InferenceAdmissionPolicy(
+            maxDuration: Self.maxDuration,
+            maxAudioBytes: Self.maxAudioBytes,
+            allowedFormats: ["wav"],
+            maxConcurrency: 1
+        ).evaluate(preflight)
+    }
+
+    private func helperExecutableURL() throws -> URL {
+        guard let url = Bundle.main.resourceURL?.appendingPathComponent("whisper-cli") else {
+            throw WhisperRuntimeError.runtimeMissing
+        }
+        return url
+    }
+
+    private func inferenceSession(artifact: SpeechArtifact, executableURL: URL) throws -> LocalInferenceSession {
         if activeProfileID == artifact.profileID, let session {
             return session
         }
         let resources = Bundle.main.resourceURL
-        let executableURL = resources?.appendingPathComponent("whisper-cli")
         let modelDirectory = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -93,8 +137,7 @@ actor WhisperRuntime {
             resources: resources,
             fallbackDirectory: modelDirectory
         )
-        guard let executableURL,
-              FileManager.default.isExecutableFile(atPath: executableURL.path) else {
+        guard FileManager.default.isExecutableFile(atPath: executableURL.path) else {
             throw WhisperRuntimeError.runtimeMissing
         }
         guard FileManager.default.fileExists(atPath: artifact.url.path),
@@ -163,7 +206,8 @@ private struct ValidatedAudio {
     let byteCount: Int
 }
 
-private enum WhisperRuntimeError: LocalizedError {
+enum WhisperRuntimeError: LocalizedError, Equatable {
+    case admissionStateUnavailable
     case inferenceBusy
     case inferenceFailed(String)
     case admissionDenied(String)
@@ -174,6 +218,8 @@ private enum WhisperRuntimeError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .admissionStateUnavailable:
+            "Current inference admission state is unavailable; try again"
         case .inferenceBusy:
             "Whisper is already processing a dictation"
         case .inferenceFailed(let detail):
