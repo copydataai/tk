@@ -9,6 +9,7 @@ actor WhisperRuntime {
 
     private var session: LocalInferenceSession?
     private var activeProfileID: String?
+    private(set) var lastPerformanceReceipt: InferencePerformanceReceipt?
 
     func invalidate() {
         session = nil
@@ -18,7 +19,8 @@ actor WhisperRuntime {
     func transcribe(
         wavURL: URL,
         language: String = "auto",
-        artifact: SpeechArtifact
+        artifact: SpeechArtifact,
+        operationID: UUID = UUID()
     ) async throws -> String {
         let audio = try Self.validatedWAV(wavURL)
         guard !language.isEmpty,
@@ -27,13 +29,44 @@ actor WhisperRuntime {
             throw WhisperRuntimeError.invalidLanguage
         }
 
+        let coldStart = activeProfileID != artifact.profileID || session == nil
         let session = try inferenceSession(artifact: artifact)
+        let modelBytes = (try? artifact.url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        let preflight = InferencePreflight(
+            duration: audio.duration,
+            audioBytes: audio.byteCount,
+            audioFormat: "wav",
+            availableMemoryBytes: ProcessInfo.processInfo.physicalMemory,
+            memoryPressure: .normal,
+            helperAvailable: true,
+            profile: .init(
+                profileID: artifact.profileID,
+                requiredMemoryBytes: UInt64(max(modelBytes, 0)) * 3,
+                device: "metal"
+            ),
+            activeOperations: 0
+        )
+        let policy = InferenceAdmissionPolicy(
+            maxDuration: Self.maxDuration,
+            maxAudioBytes: Self.maxAudioBytes,
+            allowedFormats: ["wav"],
+            maxConcurrency: 1
+        )
+        let admission = policy.evaluate(preflight)
+        guard admission == .admitted else {
+            throw WhisperRuntimeError.admissionDenied(String(describing: admission))
+        }
         do {
-            return try await session.transcribe(
+            let text = try await session.transcribe(
                 audioURL: audio.url,
                 declaredDuration: audio.duration,
-                language: language
+                language: language,
+                operationID: operationID,
+                profileID: artifact.profileID,
+                coldStart: coldStart
             )
+            lastPerformanceReceipt = await session.lastReceipt
+            return text
         } catch is CancellationError {
             throw CancellationError()
         } catch LocalInferenceSession.Error.busy {
@@ -106,7 +139,8 @@ actor WhisperRuntime {
         guard duration <= maxDuration else { throw WhisperRuntimeError.invalidAudio }
         return ValidatedAudio(
             url: url,
-            duration: duration
+            duration: duration,
+            byteCount: fileSize
         )
     }
 
@@ -126,11 +160,13 @@ actor WhisperRuntime {
 private struct ValidatedAudio {
     let url: URL
     let duration: TimeInterval
+    let byteCount: Int
 }
 
 private enum WhisperRuntimeError: LocalizedError {
     case inferenceBusy
     case inferenceFailed(String)
+    case admissionDenied(String)
     case invalidAudio
     case invalidLanguage
     case modelsMissing
@@ -142,6 +178,8 @@ private enum WhisperRuntimeError: LocalizedError {
             "Whisper is already processing a dictation"
         case .inferenceFailed(let detail):
             "Whisper failed: \(detail)"
+        case .admissionDenied(let detail):
+            "The selected dictation profile was not admitted: \(detail)"
         case .invalidAudio:
             "Whisper requires a local mono 16-bit 16 kHz WAV file"
         case .invalidLanguage:

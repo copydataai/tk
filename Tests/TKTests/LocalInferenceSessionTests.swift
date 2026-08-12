@@ -115,6 +115,26 @@ final class LocalInferenceSessionTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.workURL.path), [])
     }
 
+    func testTimeoutKillsForkedDescendantInDedicatedProcessGroup() async throws {
+        let fixture = try Fixture(script: """
+        sleep 30 &
+        echo $! >"$TK_MARKER"
+        wait
+        """)
+        defer { fixture.remove() }
+        let session = fixture.session(timeout: 0.5)
+
+        await XCTAssertThrowsErrorAsync {
+            try await session.transcribe(audioURL: fixture.audioURL, declaredDuration: 1, language: "en")
+        } verify: { error in
+            XCTAssertEqual(error as? LocalInferenceSession.Error, .timedOut)
+        }
+
+        let pid = Int32((try String(contentsOf: fixture.markerURL, encoding: .utf8))
+            .trimmingCharacters(in: .whitespacesAndNewlines))!
+        XCTAssertEqual(kill(pid, 0), -1)
+    }
+
     func testRejectsOversizeHelperResponse() async throws {
         let fixture = try Fixture(script: """
         output=""

@@ -25,6 +25,7 @@ actor LocalInferenceSession {
         case responseTooLarge
         case runtimeMissing
         case timedOut
+        case processGroupUnavailable
     }
 
     private let executableURL: URL
@@ -34,6 +35,7 @@ actor LocalInferenceSession {
     private let environment: [String: String]
     private let limits: Limits
     private var isActive = false
+    private(set) var lastReceipt: InferencePerformanceReceipt?
 
     init(
         executableURL: URL,
@@ -55,7 +57,10 @@ actor LocalInferenceSession {
     func transcribe(
         audioURL: URL,
         declaredDuration: TimeInterval,
-        language: String
+        language: String,
+        operationID: UUID = UUID(),
+        profileID: String = "unknown",
+        coldStart: Bool = true
     ) async throws -> String {
         guard !isActive else { throw Error.busy }
         isActive = true
@@ -89,10 +94,11 @@ actor LocalInferenceSession {
         defer { try? FileManager.default.removeItem(at: operationURL) }
         let outputBaseURL = operationURL.appendingPathComponent("transcript")
         let outputURL = outputBaseURL.appendingPathExtension("txt")
+        let processGroupURL = operationURL.appendingPathComponent("process-group")
 
         let process = Process()
-        process.executableURL = executableURL
-        process.arguments = [
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+        let helperArguments = [
             "--model", modelURL.path,
             "--file", audioURL.standardizedFileURL.path,
             "--language", language,
@@ -104,6 +110,13 @@ actor LocalInferenceSession {
             "--output-txt",
             "--output-file", outputBaseURL.path,
         ]
+        process.arguments = [
+            "-MPOSIX",
+            "-e",
+            "my $f=shift; my $p=fork(); defined $p or die qq(fork failed); if($p){waitpid($p,0); exit($?>>8)} POSIX::setsid()>=0 or die qq(setsid failed); open(my $h,qq(>),$f) or die qq(handshake failed); print $h $$; close $h; exec {$ARGV[0]} @ARGV or die qq(exec failed)",
+            processGroupURL.path,
+            executableURL.path,
+        ] + helperArguments
         process.currentDirectoryURL = operationURL
         process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, override in
             override
@@ -111,12 +124,30 @@ actor LocalInferenceSession {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
 
+        let startedAt = ContinuousClock.now
         try process.run()
-        setpgid(process.processIdentifier, process.processIdentifier)
+        let startupMilliseconds = Int(startedAt.duration(to: .now).inferenceMilliseconds.rounded())
+        var processGroup: pid_t?
+        for _ in 0..<40 where process.isRunning && processGroup == nil {
+            if let value = try? String(contentsOf: processGroupURL, encoding: .utf8),
+               let identifier = pid_t(value) {
+                processGroup = identifier
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        guard process.isRunning,
+              let processGroup,
+              getpgid(processGroup) == processGroup else {
+            process.terminate()
+            process.waitUntilExit()
+            throw Error.processGroupUnavailable
+        }
+        let inferenceStartedAt = ContinuousClock.now
         do {
             try await waitForExit(process)
         } catch {
-            terminate(process)
+            terminate(process, processGroup: processGroup)
             throw error
         }
         guard process.terminationStatus == 0 else { throw Error.helperFailed }
@@ -128,6 +159,17 @@ actor LocalInferenceSession {
         guard responseSize <= limits.maxResponseBytes else { throw Error.responseTooLarge }
         let data = try Data(contentsOf: outputURL, options: .mappedIfSafe)
         guard let text = String(data: data, encoding: .utf8) else { throw Error.invalidResponse }
+        lastReceipt = InferencePerformanceReceipt(
+            operationID: operationID,
+            profileID: profileID,
+            coldStart: coldStart,
+            startupMilliseconds: startupMilliseconds,
+            inferenceMilliseconds: Int(inferenceStartedAt.duration(to: .now).inferenceMilliseconds.rounded()),
+            peakMemoryBytes: nil,
+            termination: .exited,
+            cleanupSucceeded: true,
+            responseBytes: data.count
+        )
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -140,10 +182,17 @@ actor LocalInferenceSession {
         }
     }
 
-    private func terminate(_ process: Process) {
+    private func terminate(_ process: Process, processGroup: pid_t) {
         guard process.isRunning else { return }
-        kill(-process.processIdentifier, SIGKILL)
+        kill(-processGroup, SIGKILL)
         kill(process.processIdentifier, SIGKILL)
         process.waitUntilExit()
+    }
+}
+
+private extension Duration {
+    var inferenceMilliseconds: Double {
+        let parts = components
+        return Double(parts.seconds) * 1_000 + Double(parts.attoseconds) / 1_000_000_000_000_000
     }
 }

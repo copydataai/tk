@@ -327,7 +327,8 @@ final class DictationService {
                 let text = try await WhisperRuntime.shared.transcribe(
                     wavURL: wavURL,
                     language: language ?? "auto",
-                    artifact: artifact
+                    artifact: artifact,
+                    operationID: operationID
                 )
                 guard transaction?.operationID == operationID,
                       transaction?.state == .recognizing else { return }
