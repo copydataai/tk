@@ -4,7 +4,8 @@ import XCTest
 final class SpeechCapabilityPolicyTests: XCTestCase {
     func testCopyModeMakesZeroForbiddenCapabilityCalls() async {
         let adapter = CapabilitySpy()
-        XCTAssertTrue(await SpeechCapabilityPolicy().authorize(.copyModeDictation, using: adapter))
+        let authorized = await SpeechCapabilityPolicy().authorize(.copyModeDictation, using: adapter)
+        XCTAssertTrue(authorized)
         XCTAssertEqual(adapter.requests, [.microphone])
         XCTAssertEqual(adapter.count(.accessibility), 0)
         XCTAssertEqual(adapter.count(.focusCapture), 0)

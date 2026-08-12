@@ -8,7 +8,8 @@ APP="${2:-}"
 [[ -f "$ENTITLEMENTS" ]] || { echo "missing entitlements" >&2; exit 2; }
 keys="$(plutil -convert json -o - "$ENTITLEMENTS" | python3 -c 'import json,sys; print("\n".join(sorted(json.load(sys.stdin))))')"
 [[ "$keys" == "com.apple.security.device.audio-input" ]] || { echo "unexpected entitlement set" >&2; exit 1; }
-plutil -extract com.apple.security.device.audio-input raw "$ENTITLEMENTS" | grep -qx true
+plutil -convert json -o - "$ENTITLEMENTS" |
+  python3 -c 'import json,sys; assert json.load(sys.stdin) == {"com.apple.security.device.audio-input": True}'
 
 if [[ -n "$APP" ]]; then
   [[ -d "$APP" ]] || { echo "app bundle missing" >&2; exit 2; }

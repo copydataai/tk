@@ -7,8 +7,8 @@ if [[ "${TK_RUN_HEAVY_BENCHMARK:-0}" != "1" ]]; then
 fi
 
 APP="${1:-dist/tk.app}"
-HELPER="$APP/Contents/Resources/whisper/whisper-cli"
-MODEL="$APP/Contents/Resources/whisper/ggml-large-v3-turbo-q5_0.bin"
+HELPER="$APP/Contents/Resources/whisper-cli"
+MODEL="$APP/Contents/Resources/ggml-large-v3-turbo-q5_0.bin"
 [[ -x "$HELPER" && -f "$MODEL" ]] || { echo "bundled helper or model missing" >&2; exit 2; }
 echo "hardware=$(sysctl -n hw.model)"
 echo "memory_bytes=$(sysctl -n hw.memsize)"

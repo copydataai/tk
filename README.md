@@ -80,6 +80,8 @@ Before a release, complete the real-device checks in [docs/ACCEPTANCE.md](docs/A
 
 Matrix statuses are only `Pass`, `Fail`, `Blocked`, or `Not run`. Results do not transfer between macOS versions, target classes, devices, phases, or operations. `Not run` is not release evidence. Every failure requires a linked issue and an explicit `SHIP` or `HOLD` disposition. Automated Swift tests support the record but do not qualify physical microphone, sleep/wake, pressure, or installed-DMG rows.
 
+Hardening classification: transaction, journal, admission, capability, and artifact audits are **Implemented**. Physical microphone, sleep/wake, target-app, pressure, clean-install, and human-observation rows **Require physical qualification**. Future macOS/app behavior, model accuracy, hardware pressure, secure erasure, and signing credentials are **Not enforceable** by source code. `script/qualify_compatibility.py` fails closed until every required row has one valid physical record.
+
 ## First use
 
 1. Open `tk`, enable Microphone, and click **Get Started**. Accessibility is optional during onboarding.

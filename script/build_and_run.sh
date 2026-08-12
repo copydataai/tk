@@ -207,7 +207,13 @@ if [[ ! -x "$BABYLON_BINARY" ]] ||
     git -C "$BABYLON_SOURCE" fetch --depth 1 origin "$BABYLON_COMMIT"
   fi
   git -C "$BABYLON_SOURCE" checkout --detach "$BABYLON_COMMIT"
-  git -C "$BABYLON_SOURCE" submodule update --init --recursive
+  git -C "$BABYLON_SOURCE" submodule deinit --force --all || true
+  rm -rf \
+    "$BABYLON_SOURCE/.git/modules/submodules/json" \
+    "$BABYLON_SOURCE/.git/modules/submodules/onnxruntime" \
+    "$BABYLON_SOURCE/submodules/json" \
+    "$BABYLON_SOURCE/submodules/onnxruntime"
+  git -C "$BABYLON_SOURCE" submodule update --init --recursive --depth 1 --jobs 1
   CC=/usr/bin/clang CXX=/usr/bin/clang++ cmake \
     -S "$BABYLON_SOURCE" \
     -B "$BABYLON_BUILD" \
@@ -254,6 +260,9 @@ cp "$BUILD_BINARY" "$APP_BINARY"
 cp "$WHISPER_BINARY" "$APP_RESOURCES/whisper-cli"
 cp "$WHISPER_SOURCE/LICENSE" "$APP_RESOURCES/Whisper-LICENSE"
 cp "$ROOT_DIR/Assets/THIRD_PARTY_NOTICES.md" "$APP_RESOURCES/THIRD_PARTY_NOTICES.md"
+cat >"$APP_RESOURCES/uninstall.json" <<EOF
+{"applicationSupport":"~/Library/Application Support/tk","installedApp":"/Applications/tk.app","rollback":"restore the prior notarized DMG"}
+EOF
 cp "$APP_ICON" "$APP_RESOURCES/tk.icns"
 KOKORO_RESOURCES="$APP_RESOURCES/kokoro"
 mkdir -p \
