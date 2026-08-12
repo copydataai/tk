@@ -6,6 +6,7 @@ import Observation
 @MainActor
 @Observable
 final class AppModel {
+    private let launchStartedAt = ContinuousClock.now
     let dictation = DictationService()
     let profiles = SpeechProfileStore()
 
@@ -18,9 +19,17 @@ final class AppModel {
     var accessibilityGranted = false
     var microphoneGranted = false
     var transcripts: [TranscriptRecord] = []
+    var historyRetentionLimit: Int {
+        didSet {
+            historyRetentionLimit = max(0, historyRetentionLimit)
+            UserDefaults.standard.set(historyRetentionLimit, forKey: "historyRetentionLimit")
+            reloadTranscriptStore()
+        }
+    }
     private(set) var isReading = false
     private(set) var readingProfileID: String?
     private var readingOperationID: UUID?
+    private var performanceSnapshot: PerformanceSnapshot?
 
     var voiceIdentifier: String {
         didSet { UserDefaults.standard.set(voiceIdentifier, forKey: "kokoroVoiceIdentifier") }
@@ -73,12 +82,17 @@ final class AppModel {
             key: "readShortcut",
             fallback: .controlOptionR
         )
+        historyRetentionLimit = UserDefaults.standard.object(forKey: "historyRetentionLimit") == nil
+            ? TranscriptStore.defaultRetentionLimit
+            : max(0, UserDefaults.standard.integer(forKey: "historyRetentionLimit"))
 
         assert(Set(HotKeyOption.dictationChoices).isDisjoint(with: HotKeyOption.readingChoices))
 
         do {
-            transcriptStore = try TranscriptStore.applicationSupport()
-            transcripts = try transcriptStore?.recent() ?? []
+            transcriptStore = try TranscriptStore.applicationSupport(
+                retentionLimit: historyRetentionLimit
+            )
+            transcripts = try transcriptStore?.recent(limit: historyRetentionLimit) ?? []
         } catch {
             transcriptStoreError = error.localizedDescription
         }
@@ -100,6 +114,7 @@ final class AppModel {
         if let transcriptStoreError {
             statusMessage = "History unavailable: \(transcriptStoreError)"
         }
+        performanceSnapshot = .capture(launchStartedAt: launchStartedAt)
     }
 
     func toggleDictation() {
@@ -236,11 +251,79 @@ final class AppModel {
             : readingProfileID == profile.id
     }
 
+    func retryHotKeys() {
+        configureHotKeys()
+    }
+
+    func deleteTranscript(_ transcript: TranscriptRecord) throws {
+        guard let transcriptStore else {
+            throw TranscriptStoreError.sqlite(transcriptStoreError ?? "The database is unavailable.")
+        }
+        try transcriptStore.delete(id: transcript.id)
+        transcripts.removeAll { $0.id == transcript.id }
+    }
+
+    func clearTranscriptHistory() throws {
+        guard let transcriptStore else {
+            throw TranscriptStoreError.sqlite(transcriptStoreError ?? "The database is unavailable.")
+        }
+        try transcriptStore.clear()
+        transcripts.removeAll()
+    }
+
+    func transcriptExportData() throws -> Data {
+        guard let transcriptStore else {
+            throw TranscriptStoreError.sqlite(transcriptStoreError ?? "The database is unavailable.")
+        }
+        return try transcriptStore.exportData()
+    }
+
+    func diagnosticsData() throws -> Data {
+        let availability = Dictionary(uniqueKeysWithValues: profiles.availability.map {
+            ($0.key, DiagnosticsProfileAvailability($0.value))
+        })
+        let performance = performanceSnapshot ?? .capture(launchStartedAt: launchStartedAt)
+        var measurements = [
+            "appLaunchMilliseconds": performance.appLaunchMilliseconds,
+            "residentMemoryMegabytes": performance.residentMemoryMegabytes,
+        ]
+        var budgetResults = performance.budgetResults
+        if let dictationStart = dictation.lastStartMilliseconds {
+            measurements["dictationStartMilliseconds"] = dictationStart
+            budgetResults[PerformanceBudget.dictationStart.name] = PerformanceBudget.dictationStart.contains(dictationStart)
+        }
+        return try DiagnosticsReport(
+            appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development",
+            macOSVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+            architecture: Self.architecture,
+            profileAvailability: availability,
+            accessibilityPermissionGranted: accessibilityGranted,
+            microphonePermissionGranted: microphoneGranted,
+            status: DiagnosticsStatus(sanitizing: statusMessage),
+            performanceMeasurements: measurements,
+            performanceBudgetsPassed: budgetResults
+        ).exportedData()
+    }
+
     private func configureHotKeys() {
         statusMessage = hotKeys.configure(
             dictation: dictationShortcut,
             reading: readShortcut
         ) ? "Shortcuts ready" : "A shortcut is already used by another app"
+    }
+
+    private func reloadTranscriptStore() {
+        do {
+            transcriptStore = try TranscriptStore.applicationSupport(
+                retentionLimit: historyRetentionLimit
+            )
+            transcripts = try transcriptStore?.recent(limit: historyRetentionLimit) ?? []
+            transcriptStoreError = nil
+            statusMessage = "History retention updated"
+        } catch {
+            transcriptStoreError = error.localizedDescription
+            statusMessage = "History unavailable: \(error.localizedDescription)"
+        }
     }
 
     private func validateVoice(_ identifier: String) throws {
@@ -267,11 +350,9 @@ final class AppModel {
                     transcriptStoreError ?? "The database is unavailable."
                 )
             }
-            transcripts.insert(try transcriptStore.insert(text), at: 0)
+            try transcriptStore.insert(text)
+            transcripts = try transcriptStore.recent(limit: historyRetentionLimit)
             transcriptStoreError = nil
-            if transcripts.count > 50 {
-                transcripts.removeLast()
-            }
         } catch {
             transcriptStoreError = error.localizedDescription
         }
@@ -309,5 +390,15 @@ final class AppModel {
         case "zh": "你好，这是我的声音预览。"
         default: "Hi, this is a preview of my voice."
         }
+    }
+
+    private static var architecture: String {
+#if arch(arm64)
+        "arm64"
+#elseif arch(x86_64)
+        "x86_64"
+#else
+        "unknown"
+#endif
     }
 }

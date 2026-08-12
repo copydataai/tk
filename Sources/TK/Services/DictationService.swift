@@ -11,6 +11,7 @@ final class DictationService {
     private(set) var transcript = ""
     private(set) var status = "Press the shortcut to dictate"
     private(set) var activeProfileID: String?
+    private(set) var lastStartMilliseconds: Double?
 
     var onTranscriptReady: ((String) -> Void)?
     var resolveArtifact: ((String) throws -> SpeechArtifact)?
@@ -22,6 +23,7 @@ final class DictationService {
     var isPreparing: Bool { activity.isPreparing }
     var isFinalizing: Bool { activity.isFinalizing }
     @ObservationIgnored private var preparationID: UUID?
+    @ObservationIgnored private var preparationStartedAt: ContinuousClock.Instant?
 
     func toggle(language: String? = nil, artifact: SpeechArtifact? = nil) {
         guard !isTranscribing else {
@@ -65,6 +67,7 @@ final class DictationService {
     private func requestMicrophonePermission(language: String?, artifact: SpeechArtifact) {
         let operationID = UUID()
         preparationID = operationID
+        preparationStartedAt = .now
         activity.beginPreparing()
         status = "Waiting for microphone access…"
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -130,6 +133,9 @@ final class DictationService {
                 UserDefaults.standard.set(setup.deviceID, forKey: "workingMicrophoneID")
                 transcript = ""
                 activity.beginRecording()
+                if let preparationStartedAt {
+                    lastStartMilliseconds = preparationStartedAt.duration(to: .now).dictationMilliseconds
+                }
                 setup.output.startRecording(
                     to: url,
                     outputFileType: .caf,
@@ -143,6 +149,7 @@ final class DictationService {
             }
             if preparationID == operationID {
                 preparationID = nil
+                preparationStartedAt = nil
                 activity.cancelPreparation()
             }
         }
@@ -150,6 +157,7 @@ final class DictationService {
 
     private func cancelPreparation() {
         preparationID = nil
+        preparationStartedAt = nil
         activity.cancelPreparation()
         activeProfileID = nil
         status = "Dictation cancelled"
@@ -230,6 +238,13 @@ final class DictationService {
         }
     }
 
+}
+
+private extension Duration {
+    var dictationMilliseconds: Double {
+        let parts = components
+        return Double(parts.seconds) * 1_000 + Double(parts.attoseconds) / 1_000_000_000_000_000
+    }
 }
 
 private final class RecordingDelegate: NSObject, AVCaptureFileOutputRecordingDelegate {

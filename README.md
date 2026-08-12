@@ -75,6 +75,8 @@ To build, launch, and confirm that the process started:
 ./script/build_and_run.sh --verify
 ```
 
+Before a release, complete the real-device checks in [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) and record results in the [compatibility matrix](docs/COMPATIBILITY.md). These cover macOS permissions, physical microphones, cross-app insertion and reading, offline behavior, recovery, and lifecycle scenarios that hosted CI cannot exercise reliably.
+
 ## First use
 
 1. Open `tk` and click **Enable…** beside Accessibility and Microphone.
@@ -96,12 +98,28 @@ Dictation is processed after recording stops, rather than streamed while speakin
 
 ## Publish a release
 
+Automatic updates use Sparkle 2.9.5. A source build that does not provide update configuration remains safe for development: Sparkle is embedded, but its updater does not start and **Check for Updates...** is disabled.
+
+Before publishing updates:
+
+1. Run Sparkle's `generate_keys` tool once. It stores the EdDSA private key in the login keychain and prints the public key. Keep the private key available only to the release process; losing it prevents signing future updates for existing installations.
+2. Host an appcast XML file and release downloads over HTTPS. Each appcast enclosure must use Sparkle's EdDSA signature and include the monotonically increasing `sparkle:version` matching `TK_BUILD_NUMBER`. `generate_appcast` from the same Sparkle release can sign archives and update the appcast.
+3. Set `TK_SPARKLE_PUBLIC_ED_KEY` to the public key and `TK_SPARKLE_FEED_URL` to the absolute HTTPS appcast URL. Both values are written to the bundle as `SUPublicEDKey` and `SUFeedURL`; neither secret key material nor signing credentials are embedded.
+
+The Sparkle command-line tools are included in the SwiftPM artifact under `.build/artifacts/sparkle/Sparkle/bin/` after dependency resolution. See the [Sparkle documentation](https://sparkle-project.org/documentation/) for key rotation, appcast generation, archive formats, and phased releases.
+
 Store notarization credentials once with `xcrun notarytool store-credentials`, then run:
 
 ```sh
 TK_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 TK_NOTARY_PROFILE="tk-notary" \
+TK_SPARKLE_FEED_URL="https://updates.example.com/tk/appcast.xml" \
+TK_SPARKLE_PUBLIC_ED_KEY="base64-public-key-from-generate_keys" \
+TK_VERSION="0.2.0" \
+TK_BUILD_NUMBER="2" \
 ./script/build_and_run.sh --release
 ```
 
-The command signs the bundled executables with the hardened runtime, creates the DMG, submits it to Apple for notarization, staples the ticket, and verifies Gatekeeper acceptance. It fails before building if the Developer ID identity or keychain profile is missing.
+The command copies `Sparkle.framework` into the app, signs the framework and bundled executables with the hardened runtime, creates the DMG, submits it to Apple for notarization, staples the ticket, and verifies Gatekeeper acceptance. It fails before building if the Developer ID identity, keychain profile, feed URL, or public update key is missing. Afterward, sign the distributable archive with the Sparkle private key and publish its appcast entry; Apple code signing and notarization do not replace Sparkle's EdDSA signature.
+
+Pushing a `v<version>` tag runs `.github/workflows/release.yml`. Configure these GitHub Actions secrets first: `MACOS_SIGNING_IDENTITY`, `MACOS_CERTIFICATE_P12`, `MACOS_CERTIFICATE_PASSWORD`, `RELEASE_KEYCHAIN_PASSWORD`, `NOTARY_APPLE_ID`, `NOTARY_TEAM_ID`, `NOTARY_PASSWORD`, `SPARKLE_PUBLIC_ED_KEY`, and `SPARKLE_PRIVATE_KEY`. The workflow signs and notarizes the DMG, creates its SHA256 file, generates a signed `appcast.xml`, and publishes all three files to the GitHub Release.

@@ -24,6 +24,8 @@ APP_NAME="tk"
 BUNDLE_ID="com.local.tk"
 VERSION="${TK_VERSION:-0.1.0}"
 BUILD_NUMBER="${TK_BUILD_NUMBER:-1}"
+SPARKLE_FEED_URL="${TK_SPARKLE_FEED_URL:-}"
+SPARKLE_PUBLIC_ED_KEY="${TK_SPARKLE_PUBLIC_ED_KEY:-}"
 MIN_SYSTEM_VERSION="14.0"
 WHISPER_VERSION="v1.9.1"
 MODEL_NAME="ggml-large-v3-turbo-q5_0.bin"
@@ -40,6 +42,7 @@ APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
 APP_RESOURCES="$APP_CONTENTS/Resources"
+APP_FRAMEWORKS="$APP_CONTENTS/Frameworks"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 APP_ICON="$ROOT_DIR/Assets/tk.icns"
@@ -68,18 +71,34 @@ if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || [[ ! "$BUILD_NUMBER" =~ ^[0-
   exit 2
 fi
 
+if [[ -n "$SPARKLE_FEED_URL" || -n "$SPARKLE_PUBLIC_ED_KEY" ]]; then
+  if [[ -z "$SPARKLE_FEED_URL" || -z "$SPARKLE_PUBLIC_ED_KEY" ]]; then
+    echo "Set both TK_SPARKLE_FEED_URL and TK_SPARKLE_PUBLIC_ED_KEY, or neither." >&2
+    exit 2
+  fi
+  if [[ "$SPARKLE_FEED_URL" != https://* ]]; then
+    echo "TK_SPARKLE_FEED_URL must use HTTPS." >&2
+    exit 2
+  fi
+fi
+
 SIGNING_IDENTITY="${TK_SIGNING_IDENTITY:-}"
 NOTARY_PROFILE="${TK_NOTARY_PROFILE:-}"
+NOTARY_KEYCHAIN="${TK_NOTARY_KEYCHAIN:-}"
+NOTARY_ARGS=(--keychain-profile "$NOTARY_PROFILE")
+if [[ -n "$NOTARY_KEYCHAIN" ]]; then
+  NOTARY_ARGS+=(--keychain "$NOTARY_KEYCHAIN")
+fi
 if [[ "$MODE" == "--release" || "$MODE" == "release" ]]; then
-  if [[ -z "$SIGNING_IDENTITY" || -z "$NOTARY_PROFILE" ]]; then
-    echo "Set TK_SIGNING_IDENTITY and TK_NOTARY_PROFILE before building a release." >&2
+  if [[ -z "$SIGNING_IDENTITY" || -z "$NOTARY_PROFILE" || -z "$SPARKLE_FEED_URL" ]]; then
+    echo "Set signing, notarization, and Sparkle update variables before building a release." >&2
     exit 2
   fi
   if ! security find-identity -p codesigning -v | grep -F "$SIGNING_IDENTITY" | grep -Fq "Developer ID Application:"; then
     echo "TK_SIGNING_IDENTITY must name an installed Developer ID Application identity." >&2
     exit 2
   fi
-  if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null; then
+  if ! xcrun notarytool history "${NOTARY_ARGS[@]}" >/dev/null; then
     echo "TK_NOTARY_PROFILE is not a usable notarytool keychain profile." >&2
     exit 2
   fi
@@ -222,10 +241,16 @@ if [[ "$MODE" == "--dmg" || "$MODE" == "dmg" || "$MODE" == "--release" || "$MODE
 fi
 swift build --package-path "$ROOT_DIR" --configuration "$BUILD_CONFIGURATION" --product "$APP_NAME"
 BUILD_BINARY="$(swift build --package-path "$ROOT_DIR" --configuration "$BUILD_CONFIGURATION" --show-bin-path)/$APP_NAME"
+SPARKLE_FRAMEWORK="$(find "$ROOT_DIR/.build/artifacts" -type d -name Sparkle.framework -print -quit)"
+if [[ -z "$SPARKLE_FRAMEWORK" ]]; then
+  echo "Sparkle.framework was not found in SwiftPM build artifacts." >&2
+  exit 1
+fi
 
 rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_MACOS" "$APP_RESOURCES"
+mkdir -p "$APP_MACOS" "$APP_RESOURCES" "$APP_FRAMEWORKS"
 cp "$BUILD_BINARY" "$APP_BINARY"
+/usr/bin/ditto "$SPARKLE_FRAMEWORK" "$APP_FRAMEWORKS/Sparkle.framework"
 cp "$WHISPER_BINARY" "$APP_RESOURCES/whisper-server"
 cp "$WHISPER_SOURCE/LICENSE" "$APP_RESOURCES/Whisper-LICENSE"
 cp "$ROOT_DIR/Assets/THIRD_PARTY_NOTICES.md" "$APP_RESOURCES/THIRD_PARTY_NOTICES.md"
@@ -247,6 +272,9 @@ cp "$BABYLON_SOURCE/submodules/onnxruntime/rust/LICENSE-APACHE" \
 chmod +x "$APP_BINARY"
 chmod +x "$APP_RESOURCES/whisper-server"
 chmod +x "$KOKORO_RESOURCES/babylon"
+if ! /usr/bin/otool -l "$APP_BINARY" | grep -Fq '@executable_path/../Frameworks'; then
+  /usr/bin/install_name_tool -add_rpath '@executable_path/../Frameworks' "$APP_BINARY"
+fi
 
 if [[ "$MODE" == "--dmg" || "$MODE" == "dmg" || "$MODE" == "--release" || "$MODE" == "release" ]]; then
   mkdir -p "$APP_RESOURCES/models"
@@ -282,6 +310,11 @@ cat >"$INFO_PLIST" <<PLIST
 </plist>
 PLIST
 
+if [[ -n "$SPARKLE_FEED_URL" ]]; then
+  /usr/bin/plutil -insert SUFeedURL -string "$SPARKLE_FEED_URL" "$INFO_PLIST"
+  /usr/bin/plutil -insert SUPublicEDKey -string "$SPARKLE_PUBLIC_ED_KEY" "$INFO_PLIST"
+fi
+
 sign_distribution() {
   local identity="$1"
   while IFS= read -r library; do
@@ -289,6 +322,7 @@ sign_distribution() {
   done < <(find "$KOKORO_RESOURCES/lib" -type f -name '*.dylib' -print)
   /usr/bin/codesign --force --sign "$identity" --timestamp --options runtime "$KOKORO_RESOURCES/babylon"
   /usr/bin/codesign --force --sign "$identity" --timestamp --options runtime "$APP_RESOURCES/whisper-server"
+  /usr/bin/codesign --force --deep --sign "$identity" --timestamp --options runtime "$APP_FRAMEWORKS/Sparkle.framework"
   /usr/bin/codesign \
     --force \
     --sign "$identity" \
@@ -319,7 +353,12 @@ create_dmg() {
 if [[ "$MODE" == "--release" || "$MODE" == "release" ]]; then
   sign_distribution "$SIGNING_IDENTITY"
 else
-  /usr/bin/codesign --force --deep --sign - --options runtime --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
+  DEVELOPMENT_ENTITLEMENTS="$(mktemp)"
+  cp "$ENTITLEMENTS" "$DEVELOPMENT_ENTITLEMENTS"
+  /usr/libexec/PlistBuddy -c "Add :com.apple.security.cs.disable-library-validation bool true" "$DEVELOPMENT_ENTITLEMENTS"
+  /usr/bin/codesign --force --deep --sign - --options runtime "$APP_FRAMEWORKS/Sparkle.framework"
+  /usr/bin/codesign --force --deep --sign - --options runtime --entitlements "$DEVELOPMENT_ENTITLEMENTS" "$APP_BUNDLE"
+  rm -f "$DEVELOPMENT_ENTITLEMENTS"
 fi
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 
@@ -421,7 +460,7 @@ case "$MODE" in
     ;;
   --release|release)
     /usr/bin/codesign --force --sign "$SIGNING_IDENTITY" --timestamp "$DMG_PATH"
-    xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
+    xcrun notarytool submit "$DMG_PATH" "${NOTARY_ARGS[@]}" --wait
     xcrun stapler staple "$DMG_PATH"
     xcrun stapler validate "$DMG_PATH"
     /usr/sbin/spctl --assess --type execute --verbose=2 "$APP_BUNDLE"

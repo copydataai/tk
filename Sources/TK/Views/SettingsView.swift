@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @MainActor
@@ -52,6 +53,7 @@ private enum SettingsDestination: String, CaseIterable, Identifiable {
 @MainActor
 private struct GeneralSettings: View {
     @Bindable var model: AppModel
+    @State private var exportError: String?
 
     var body: some View {
         Form {
@@ -70,6 +72,36 @@ private struct GeneralSettings: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("History") {
+                Picker("Keep transcripts", selection: $model.historyRetentionLimit) {
+                    Text("Do not keep history").tag(0)
+                    Text("Last 25").tag(25)
+                    Text("Last 50").tag(50)
+                    Text("Last 100").tag(100)
+                    Text("Last 500").tag(500)
+                }
+                Text("Microphone audio is never retained. Transcript retention changes apply immediately.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Diagnostics") {
+                Button("Export Diagnostics…") {
+                    exportDiagnostics()
+                }
+                Text("The report contains app and system status only. It excludes transcript text and audio paths.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Recovery") {
+                Button("Refresh Permissions") { model.refreshPermissions() }
+                Button("Retry Shortcuts") { model.retryHotKeys() }
+                if !model.accessibilityGranted {
+                    Button("Open Accessibility Settings") { model.requestAccessibility() }
+                }
+                if !model.microphoneGranted {
+                    Button("Open Microphone Settings") { model.requestMicrophone() }
+                }
+            }
             Section("Status") {
                 Text(model.statusMessage)
                     .foregroundStyle(.secondary)
@@ -78,6 +110,26 @@ private struct GeneralSettings: View {
         }
         .formStyle(.grouped)
         .navigationTitle("General")
+        .alert("Diagnostics Export Failed", isPresented: Binding(
+            get: { exportError != nil },
+            set: { if !$0 { exportError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(exportError ?? "An unknown error occurred.")
+        }
+    }
+
+    private func exportDiagnostics() {
+        do {
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [.json]
+            panel.nameFieldStringValue = "tk-diagnostics.json"
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            try model.diagnosticsData().write(to: url, options: .atomic)
+        } catch {
+            exportError = error.localizedDescription
+        }
     }
 }
 

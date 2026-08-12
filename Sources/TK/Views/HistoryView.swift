@@ -1,7 +1,10 @@
+import AppKit
 import SwiftUI
 
 struct HistoryView: View {
     let model: AppModel
+    @State private var showingClearConfirmation = false
+    @State private var errorMessage: String?
 
     var body: some View {
         Group {
@@ -12,23 +15,95 @@ struct HistoryView: View {
                     description: Text("Completed dictations will appear here.")
                 )
             } else {
-                List(model.transcripts) { transcript in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(transcript.text)
-                            .textSelection(.enabled)
-                        Text(
-                            transcript.createdAt.formatted(
-                                date: .abbreviated,
-                                time: .shortened
-                            )
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                List {
+                    ForEach(model.transcripts) { transcript in
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(transcript.text)
+                                    .textSelection(.enabled)
+                                Text(
+                                    transcript.createdAt.formatted(
+                                        date: .abbreviated,
+                                        time: .shortened
+                                    )
+                                )
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Delete", systemImage: "trash", role: .destructive) {
+                                delete(transcript)
+                            }
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.borderless)
+                            .help("Delete transcript")
+                        }
+                        .padding(.vertical, 6)
                     }
-                    .padding(.vertical, 6)
                 }
             }
         }
         .navigationTitle("History")
+        .toolbar {
+            ToolbarItemGroup {
+                Button("Export", systemImage: "square.and.arrow.up") {
+                    exportHistory()
+                }
+                .disabled(model.transcripts.isEmpty)
+
+                Button("Clear All", systemImage: "trash", role: .destructive) {
+                    showingClearConfirmation = true
+                }
+                .disabled(model.transcripts.isEmpty)
+            }
+        }
+        .confirmationDialog(
+            "Clear all transcript history?",
+            isPresented: $showingClearConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Clear All", role: .destructive) {
+                clearHistory()
+            }
+        } message: {
+            Text("This cannot be undone.")
+        }
+        .alert("History Error", isPresented: Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(errorMessage ?? "An unknown error occurred.")
+        }
+    }
+
+    private func delete(_ transcript: TranscriptRecord) {
+        do {
+            try model.deleteTranscript(transcript)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func clearHistory() {
+        do {
+            try model.clearTranscriptHistory()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func exportHistory() {
+        do {
+            let data = try model.transcriptExportData()
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [.json]
+            panel.nameFieldStringValue = "tk-transcript-history.json"
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            try data.write(to: url, options: .atomic)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 }

@@ -23,6 +23,7 @@ func revealMainWindow() {
 struct TKApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = AppModel()
+    @StateObject private var updateController = UpdateController()
 
     var body: some Scene {
         WindowGroup("tk", id: "main") {
@@ -49,6 +50,15 @@ struct TKApp: App {
                 "tk",
                 systemImage: model.dictation.isRecording ? "waveform.circle.fill" : "waveform.circle"
             )
+        }
+
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates...") {
+                    updateController.checkForUpdates()
+                }
+                .disabled(!updateController.isEnabled)
+            }
         }
     }
 }

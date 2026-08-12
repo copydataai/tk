@@ -8,9 +8,15 @@ let package = Package(
     products: [
         .executable(name: "tk", targets: ["TK"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle.git", exact: "2.9.5")
+    ],
     targets: [
         .executableTarget(
             name: "TK",
+            dependencies: [
+                .product(name: "Sparkle", package: "Sparkle")
+            ],
             exclude: ["Views/SettingsProfilesPrototype.html"],
             linkerSettings: [
                 .linkedLibrary("sqlite3")

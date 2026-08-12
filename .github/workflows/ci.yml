@@ -18,8 +18,12 @@ jobs:
         run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
       - name: Test Swift package
         run: swift test
+      - name: Build with no warnings
+        run: swift build -Xswiftc -warnings-as-errors
       - name: Validate build script
         run: bash -n script/build_and_run.sh
+      - name: Validate workflow syntax
+        run: ruby -e 'require "yaml"; YAML.load_file(".github/workflows/ci.yml"); YAML.load_file(".github/workflows/release.yml")'
       - name: Validate entitlements
         run: plutil -lint Assets/tk.entitlements
       - name: Validate release command
