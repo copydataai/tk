@@ -1,6 +1,8 @@
 # Release acceptance
 
-Run this checklist against the exact DMG intended for publication. Use a macOS user account that has not previously granted `tk` permissions when checking first-run behavior. Record the result in the release issue or pull request and attach logs or screen recordings for failures.
+Run this checklist against the exact DMG intended for publication. Use a macOS user account that has not previously granted `tk` permissions when checking first-run behavior. Record each result in the release issue or pull request and attach logs or screen recordings for failures.
+
+The row-level release record is `docs/COMPATIBILITY.md`. Its only status values are `Pass`, `Fail`, `Blocked`, and `Not run`. Complete one record for one row only. Never generalize evidence across macOS versions, target classes, controls, microphone routes, interruption phases, pressure levels, or operations. Automated coverage does not qualify a physical-device or installed-DMG row. `Not run` is not evidence. Every `Fail` must link an issue with severity and reproduction steps and include the release owner's `SHIP` or `HOLD` disposition. Every `Blocked` row must link an owned blocker and include a release disposition.
 
 ## Test record
 
@@ -12,7 +14,11 @@ Run this checklist against the exact DMG intended for publication. Use a macOS u
 - Input device:
 - Target apps and versions:
 - Network state during offline checks:
-- Result: PASS / FAIL
+- Status: Pass / Fail / Blocked / Not run
+- Compatibility matrix row:
+- Evidence link:
+- Failure issue, severity, reproduction steps, and SHIP/HOLD disposition:
+- Blocker, owner, and release disposition:
 
 ## Artifact and installation
 
@@ -50,6 +56,8 @@ Repeat the following in every target app listed in the compatibility record:
 - [ ] Confirm cancelling or producing silence does not insert stray text.
 - [ ] Confirm a completed dictation appears in History with the expected text and timestamp.
 - [ ] Switch to another connected microphone and confirm recording uses the selected or fallback input.
+
+For each editable target, retain the operation identifier and insertion receipt showing the final disposition. For each target-refusal row, use the concrete read-only, disabled, protected, or otherwise refusing control named by the matrix and confirm the app does not claim insertion success or destructively replace clipboard contents. A successful editable control does not qualify its refusal row.
 
 ## Read aloud in real apps
 
@@ -93,6 +101,8 @@ The app maps continuity outcomes to these user-facing notifications: `interrupte
 - [ ] Exercise critical thermal or memory pressure and confirm new or active work is reported as `resourceBlocked`; recognition audio is preserved when available, or loss is reported explicitly. Confirm no automatic Speech profile downgrade.
 - [ ] Repeat the device gates with built-in, USB, and Bluetooth microphones and attach the result. These are physical release gates and are not satisfied by the software test suite.
 
+Record sleep preparation, sleep during recording, sleep during local transcription, wake reprobe, and post-wake retry as separate rows for each built-in, USB, and Bluetooth route. Record active disconnect and later reconnect separately for USB and Bluetooth. Record a newly connected non-active USB route and a newly connected non-active Bluetooth route separately. Do not use a combined USB/Bluetooth result.
+
 Software coverage for policy, transaction state, device identity, wake reprobe requirements, resource outcomes, and notification mapping is provided by `SystemContinuityTests` and `DictationTransactionTests`. Software tests do not prove physical sleep/wake, AV device routing, USB behavior, Bluetooth behavior, or actual pressure delivery.
 
 ### Local inference boundary
@@ -104,6 +114,8 @@ The pinned whisper.cpp server does not provide narrow, distributable request aut
 - [ ] Confirm timeout and cancellation terminate the helper and remove its operation directory.
 - [ ] Confirm the packaged app contains `whisper-cli` and does not contain `whisper-server`.
 
+Record malformed, oversize, over-duration, concurrent, crash, timeout, cancellation, and each stale-cleanup case as separate operations. For the no-listener row, describe success as completion through a fresh operation-scoped helper, never as successful access to a listener. For the legacy unauthenticated-listener rejection row, confirm that no reusable HTTP authority, token, port, or helper remains after that operation exits. Do not frame the absence of a listener as a network authentication success.
+
 Dictation audio is separately bounded to 15 minutes and 64 MiB. Each operation owns a private directory containing its CAF recording, converted speech WAV, and a content-free ownership marker. Normal completion, ordinary failure, and cancellation remove the directory. A continuity interruption during recognition can retain only that operation's audio when the file still exists; the app reports explicit loss otherwise. Launch cleanup considers only direct child directories with valid tk ownership markers, retains fresh or verified-live operations, and reports only identifiers and counts. This is application-scoped cleanup and makes no claim about filesystem snapshots, backups, swap, or storage-device remanence.
 
 This boundary protects against unrelated local processes reaching an unauthenticated resident inference listener. Compromise of the same user account or the full system remains out of scope because such an attacker can inspect or control tk's files and processes directly.
@@ -111,7 +123,14 @@ This boundary protects against unrelated local processes reaching an unauthentic
 ## Release decision
 
 - [ ] All required rows in `docs/COMPATIBILITY.md` have a current result.
+- [ ] Every advertised target class has separate current-macOS editable, refusal, and Read Selection rows.
+- [ ] The current-macOS Accessibility-denied Copy rows are complete and demonstrate AX-free record, transcribe, pending-result persistence, and user-initiated copy behavior.
+- [ ] Built-in, USB, and Bluetooth sleep-recording, sleep-transcription, wake/retry, route-change, and cleanup rows are complete or explicitly Blocked.
+- [ ] Warning and critical memory and thermal rows are complete or explicitly Blocked.
+- [ ] Retention-zero and each Clear All scope and exclusion row are complete.
+- [ ] Every supported-macOS clean-install and offline DMG row is complete.
 - [ ] Every failure has a linked issue, severity, reproduction steps, and release disposition.
+- [ ] No `Not run` row is cited as evidence.
 - [ ] A second person has reviewed the checksum, notarization result, and completed record.
 - [ ] Release owner decision: SHIP / HOLD
 

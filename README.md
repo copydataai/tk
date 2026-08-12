@@ -76,7 +76,9 @@ To build, launch, and confirm that the process started:
 ./script/build_and_run.sh --verify
 ```
 
-Before a release, complete the real-device checks in [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) and record results in the [compatibility matrix](docs/COMPATIBILITY.md). These cover macOS permissions, physical microphones, cross-app insertion and reading, offline behavior, recovery, and lifecycle scenarios that hosted CI cannot exercise reliably.
+Before a release, complete the real-device checks in [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) and record one result per row in the [compatibility and hardening matrix](docs/COMPATIBILITY.md). The matrix covers insertion receipts and target refusal, Accessibility-denied Copy Mode, sleep during recording and transcription, wake/retry, built-in/USB/Bluetooth disconnect and reconnect behavior, memory and thermal pressure, helper crash and stale cleanup, the per-operation no-listener boundary, retention-zero and Clear All scope, and clean-install offline DMG behavior.
+
+Matrix statuses are only `Pass`, `Fail`, `Blocked`, or `Not run`. Results do not transfer between macOS versions, target classes, devices, phases, or operations. `Not run` is not release evidence. Every failure requires a linked issue and an explicit `SHIP` or `HOLD` disposition. Automated Swift tests support the record but do not qualify physical microphone, sleep/wake, pressure, or installed-DMG rows.
 
 ## First use
 
