@@ -225,6 +225,38 @@ final class CoreWorkflowTests: XCTestCase {
         XCTAssertNotNil(MacAccessibility.element(from: systemElement))
     }
 
+    @MainActor
+    func testRecognitionInterruptionRemovesAudioAndReportsThatItWasNotRetained() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let operationID = UUID()
+        let cleaner = OperationArtifactCleaner(rootURL: directory)
+        let artifacts = try cleaner.createOperation(operationID: operationID)
+        try Data("audio".utf8).write(to: artifacts.recordingURL)
+        var transaction = DictationTransaction(operationID: operationID, profileID: "profile")
+        try transaction.transition(to: .recording)
+        try transaction.transition(to: .finalizing)
+        transaction.setAudioState(.available(artifacts.recordingURL))
+        try transaction.transition(to: .recognizing)
+        let service = DictationService(
+            artifactCleaner: cleaner,
+            transaction: transaction
+        )
+        var reportedMessage: String?
+        service.onContinuityNotification = { _, message in reportedMessage = message }
+
+        service.handleContinuityEvent(.willSleep)
+
+        XCTAssertEqual(
+            reportedMessage,
+            "Recognition was interrupted while this Mac slept. Audio was not retained."
+        )
+        XCTAssertEqual(service.transaction?.audioState, .discarded)
+        XCTAssertNil(service.preservedAudioURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: artifacts.directoryURL.path))
+    }
+
     private func verifiedReceipt(operationID: UUID, text: String) -> InsertionReceipt {
         .verified(.init(
             operationID: operationID,

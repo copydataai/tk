@@ -50,8 +50,14 @@ enum InsertionReceipt: Equatable, Sendable {
 
     static let targetMismatch = Self.failedRecoverable(.targetChanged)
 
-    static func axWriteResult(writeSucceeded: Bool, verifiedInsertion: VerifiedInsertion?) -> Self {
+    static func axWriteResult(
+        writeSucceeded: Bool,
+        preStateReadable: Bool,
+        postStateReadable: Bool,
+        verifiedInsertion: VerifiedInsertion?
+    ) -> Self {
         guard writeSucceeded else { return .failedRecoverable(.unsupportedControl) }
+        guard preStateReadable, postStateReadable else { return .attempted }
         return verifiedInsertion.map(Self.verified) ?? .failedRecoverable(.readbackMismatch)
     }
 

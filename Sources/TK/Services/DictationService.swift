@@ -39,9 +39,11 @@ final class DictationService {
 
     init(
         pendingStore: PendingDictationStore? = nil,
-        artifactCleaner: OperationArtifactCleaner = OperationArtifactCleaner()
+        artifactCleaner: OperationArtifactCleaner = OperationArtifactCleaner(),
+        transaction: DictationTransaction? = nil
     ) {
         self.artifactCleaner = artifactCleaner
+        self.transaction = transaction
         artifactCleanupReport = artifactCleaner.cleanupStale()
         let resolvedStore: PendingDictationStore
         do {
@@ -386,6 +388,10 @@ final class DictationService {
         recognitionTask?.cancel()
         if state == .recording || state == .finalizing {
             captureOutput?.stopRecording()
+        } else if state == .recognizing, let operationID = transaction?.operationID {
+            preservedAudioURL = nil
+            artifactCleaner.removeOperation(operationID: operationID)
+            transaction?.setAudioState(.discarded)
         } else if state == .preparing, let operationID = transaction?.operationID {
             artifactCleaner.removeOperation(operationID: operationID)
             transaction?.setAudioState(.discarded)

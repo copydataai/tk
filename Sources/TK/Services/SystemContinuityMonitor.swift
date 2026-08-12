@@ -52,8 +52,8 @@ enum ContinuityPolicy {
         case .willSleep:
             if transactionState == .recognizing {
                 return .interruptRecoverably(
-                    message: "Dictation was interrupted while this Mac slept. Audio was preserved for recovery.",
-                    preserveAudio: true
+                    message: "Recognition was interrupted while this Mac slept. Audio was not retained.",
+                    preserveAudio: false
                 )
             }
             return .interruptRecoverably(
@@ -63,8 +63,8 @@ enum ContinuityPolicy {
         case .didWake:
             if transactionState == .recognizing {
                 return .interruptRecoverably(
-                    message: "Dictation was interrupted while this Mac slept. Audio was preserved for recovery.",
-                    preserveAudio: true
+                    message: "Recognition was interrupted while this Mac slept. Audio was not retained.",
+                    preserveAudio: false
                 )
             }
             return .interruptRecoverably(
@@ -99,8 +99,8 @@ enum ContinuityPolicy {
                 )
             }
             return .resourceBlocked(
-                message: "Recognition stopped because system resources are critically constrained. Audio was preserved for recovery.",
-                preserveAudio: true
+                message: "Recognition stopped because system resources are critically constrained. Audio was not retained.",
+                preserveAudio: false
             )
         }
     }

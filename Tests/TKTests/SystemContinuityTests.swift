@@ -46,8 +46,8 @@ final class SystemContinuityTests: XCTestCase {
                 capturedDeviceID: "usb"
             ),
             .interruptRecoverably(
-                message: "Dictation was interrupted while this Mac slept. Audio was preserved for recovery.",
-                preserveAudio: true
+                message: "Recognition was interrupted while this Mac slept. Audio was not retained.",
+                preserveAudio: false
             )
         )
         XCTAssertTrue(ContinuityPolicy.requiresDeviceReprobe(after: .didWake))
@@ -69,8 +69,8 @@ final class SystemContinuityTests: XCTestCase {
                 capturedDeviceID: nil
             ),
             .resourceBlocked(
-                message: "Recognition stopped because system resources are critically constrained. Audio was preserved for recovery.",
-                preserveAudio: true
+                message: "Recognition stopped because system resources are critically constrained. Audio was not retained.",
+                preserveAudio: false
             )
         )
     }

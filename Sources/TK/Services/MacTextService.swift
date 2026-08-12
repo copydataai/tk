@@ -125,36 +125,53 @@ final class MacTextService: NSObject {
                text as CFTypeRef
         ) == .success
         if writeSucceeded {
-            guard let originalValue,
-                  let originalRange,
-                  let replacedText,
-                  let insertedRange = Self.insertedRange(
-                      replacing: originalRange,
-                      with: text,
-                      in: originalValue
-                  ),
-                  let resultingValue = MacAccessibility.value(of: target.element),
-                  let resultingRange = MacAccessibility.selectedTextRange(of: target.element),
-                  resultingValue == (originalValue as NSString).replacingCharacters(
-                      in: originalRange,
-                      with: text
-                  ),
-                  let resultingTarget = MacAccessibility.insertionTarget(from: target.element) else {
-                return .failedRecoverable(.readbackMismatch)
+            let insertedRange = originalValue.flatMap { value in
+                originalRange.flatMap { range in
+                    Self.insertedRange(replacing: range, with: text, in: value)
+                }
             }
-            let surrounding = (resultingValue as NSString).replacingCharacters(
-                in: insertedRange,
-                with: ""
+            let preStateReadable = originalValue != nil
+                && originalRange != nil
+                && replacedText != nil
+                && insertedRange != nil
+            let resultingValue = MacAccessibility.value(of: target.element)
+            let resultingRange = MacAccessibility.selectedTextRange(of: target.element)
+            let resultingTarget = MacAccessibility.insertionTarget(from: target.element)
+            let postStateReadable = resultingValue != nil
+                && resultingRange != nil
+                && resultingTarget != nil
+            var verifiedInsertion: VerifiedInsertion?
+            if let originalValue,
+               let originalRange,
+               let replacedText,
+               let insertedRange,
+               let resultingValue,
+               let resultingRange,
+               let resultingTarget,
+               resultingValue == (originalValue as NSString).replacingCharacters(
+                   in: originalRange,
+                   with: text
+               ) {
+                let surrounding = (resultingValue as NSString).replacingCharacters(
+                    in: insertedRange,
+                    with: ""
+                )
+                verifiedInsertion = .init(
+                    operationID: operationID,
+                    target: resultingTarget.fingerprint,
+                    insertedRange: insertedRange,
+                    resultingSelectionRange: resultingRange,
+                    resultingValue: resultingValue,
+                    replacedText: replacedText,
+                    surroundingStateDigest: InsertionTargetFingerprint.digest(surrounding)
+                )
+            }
+            return InsertionReceipt.axWriteResult(
+                writeSucceeded: true,
+                preStateReadable: preStateReadable,
+                postStateReadable: postStateReadable,
+                verifiedInsertion: verifiedInsertion
             )
-            return .verified(.init(
-                operationID: operationID,
-                target: resultingTarget.fingerprint,
-                insertedRange: insertedRange,
-                resultingSelectionRange: resultingRange,
-                resultingValue: resultingValue,
-                replacedText: replacedText,
-                surroundingStateDigest: InsertionTargetFingerprint.digest(surrounding)
-            ))
         }
 
         try? await restoreFocus(to: target.element)

@@ -5,14 +5,48 @@ final class InsertionReceiptTests: XCTestCase {
     func testMatchingAXReadbackIsVerified() {
         let verified = verifiedReceipt()
         XCTAssertEqual(
-            InsertionReceipt.axWriteResult(writeSucceeded: true, verifiedInsertion: verified),
+            InsertionReceipt.axWriteResult(
+                writeSucceeded: true,
+                preStateReadable: true,
+                postStateReadable: true,
+                verifiedInsertion: verified
+            ),
             .verified(verified)
         )
     }
 
-    func testUnreadableAXPoststateIsRecoverableFailure() {
+    func testSuccessfulAXWriteWithUnreadablePrestateIsAttempted() {
         XCTAssertEqual(
-            InsertionReceipt.axWriteResult(writeSucceeded: true, verifiedInsertion: nil),
+            InsertionReceipt.axWriteResult(
+                writeSucceeded: true,
+                preStateReadable: false,
+                postStateReadable: true,
+                verifiedInsertion: nil
+            ),
+            .attempted
+        )
+    }
+
+    func testSuccessfulAXWriteWithUnreadablePoststateIsAttempted() {
+        XCTAssertEqual(
+            InsertionReceipt.axWriteResult(
+                writeSucceeded: true,
+                preStateReadable: true,
+                postStateReadable: false,
+                verifiedInsertion: nil
+            ),
+            .attempted
+        )
+    }
+
+    func testSuccessfulAXWriteWithReadableContradictoryPoststateFailsRecoverably() {
+        XCTAssertEqual(
+            InsertionReceipt.axWriteResult(
+                writeSucceeded: true,
+                preStateReadable: true,
+                postStateReadable: true,
+                verifiedInsertion: nil
+            ),
             .failedRecoverable(.readbackMismatch)
         )
     }
